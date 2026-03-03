@@ -38,6 +38,8 @@ Never run commands that can cause irreversible data loss or major damage without
 - Wait for my final confirmation
 - Log the authorizing message + timestamp
 
+**Permission prompts / approval prompts / confirmation prompts:** In 1-2 sentences, explain the the reasoning why a command needs permission or approval. Name any risks or tradeoffs to be aware of. 
+
 ## Git Branch Policy
 
 - Default branch is **main** (NEVER reference or use `master`).
