@@ -23,8 +23,9 @@
 
 - Never deletes source folders.
 - Never blocks zip creation due to missing items; warns and records.
-- Creates packet folders lazily, except `_meta/` which always exists.
+- Creates packet folders lazily, except `_meta/public/` and `_meta/private/` which always exist.
 - Deterministic output naming and stable folder structure.
+- Each packet includes a plain-text summary file describing generated artifacts and CPA attention items.
 - Atomic file writes: never leave partial outputs with the expected filename.
 - Deliverables record their inputs + schema versions so re-runs can safely skip or regenerate.
 - All output filenames include the tax year for unambiguous identification when extracted individually.
@@ -66,7 +67,7 @@
            │                           │
      ┌─────▼──────────────────────────────────────┐
      │            Session Data Store               │
-     │  (in-memory + _meta/cache/ disk per year)   │
+     │  (in-memory + _meta/private/cache/ disk per year)   │
      └─────┬───────────────────────────┬───────────┘
            │                           │
      ┌─────▼──────────────────────────────────────┐
@@ -119,6 +120,7 @@
 
 ```
 cpapacket/
+├── .gitignore                   # CRITICAL: prevents committing secrets, financial data, and PII
 ├── pyproject.toml
 ├── README.md
 ├── PLAN.md
@@ -238,17 +240,26 @@ All other state is derived from API calls and cached in `_meta/` per ADR-7.
 **ADR-4: Monthly slicing for General Ledger.**
 QBO report API has undocumented size limits. Pulling 12 monthly slices and merging is more reliable than a single annual pull. Slices are cached individually for resumability.
 
-**ADR-5: Raw JSON always preserved.**
-Every deliverable saves the raw API response as `*_raw.json` or `*_data.json`. This provides an audit trail and allows re-generation without re-fetching.
+**ADR-5: Raw JSON preserved by default (privacy overrides available).**
+Every deliverable may write a raw API artifact (e.g., `*_raw.json`) to support auditability and offline regeneration.
+- Default: write raw artifacts.
+- `--no-raw`: do not write raw artifacts.
+- `--redact`: write redacted raw artifacts (never unredacted). This provides an audit trail and allows re-generation without re-fetching.
 
 **ADR-6: Warnings never block.**
 Missing deliverables, reconciliation mismatches, and structural flags produce warnings and exit code 2, but never prevent zip creation. The CPA packet is always producible.
 
 **ADR-7: Session-scoped data cache with disk persistence.**
-A `SessionDataStore` sits between API clients and business logic. On first request for a given (endpoint, parameters) tuple, it calls the API, caches the raw JSON in memory, and writes it to `_meta/cache/{endpoint_hash}.json`. On subsequent requests within the same session or a later session for the same tax year, it returns the cached response. During `build`, a single `SessionDataStore` instance is shared across all deliverable generators, ensuring zero duplicate API calls. The `--force` flag bypasses the cache and re-fetches everything. The General Ledger's 12 monthly slices are cached individually so that a partial failure can resume from the last successful month.
+A `SessionDataStore` sits between API clients and business logic. On first request for a given (endpoint, parameters) tuple, it calls the API, caches the raw JSON in memory, and writes it to `_meta/private/cache/{cache_key}.json.gz`. On subsequent requests within the same session or a later session for the same tax year, it returns the cached response. During `build`, a single `SessionDataStore` instance is shared across all deliverable generators, ensuring zero duplicate API calls. The `--force` flag bypasses the cache and re-fetches everything. The General Ledger's 12 monthly slices are cached individually so that a partial failure can resume from the last successful month.
 
 **ADR-8: Structured logging with dual output.**
-All operations log to both console (via `rich.logging.RichHandler` at INFO level by default) and a persistent file (`_meta/cpapacket.log` via `logging.FileHandler` at DEBUG level always). The file log captures: timestamps, API endpoints called, response status codes, cache hits/misses, row counts for each deliverable, validation results, and any warnings or errors. Console verbosity is controlled by `--verbose` (DEBUG to console) and `--quiet` (WARNING only). The log file is included in the zip archive alongside the validation report.
+All operations log to both console (via `rich.logging.RichHandler` at INFO level by default) and a persistent file (`_meta/private/cpapacket.log` via `logging.FileHandler` at DEBUG level always). The file log captures: timestamps, API endpoints called, response status codes, cache hits/misses, row counts for each deliverable, validation results, and any warnings or errors. Console verbosity is controlled by `--verbose` (DEBUG to console) and `--quiet` (WARNING only). The log file is not included in the zip archive by default.
+`--include-debug` may include `_meta/private/cpapacket.log`.
+**ADR-8a: Public vs Private Metadata Boundary**
+- `_meta/public/` → validation_report.txt, packet_manifest.json
+- `_meta/private/` → cache/, cpapacket.log, raw payload artifacts
+- Zip includes `_meta/public/` only unless flags override
+
 
 **ADR-9: Per-deliverable metadata with input fingerprinting.**
 Each deliverable command writes `_meta/{deliverable}_metadata.json` after successful generation. The metadata records the exact inputs, a deterministic fingerprint (sha256 of canonicalized input dict), the list of generated artifacts, schema versions, and any warnings. The build command's `--incremental` mode uses these fingerprints to skip regeneration when inputs haven't changed and outputs pass integrity checks (file exists + size > 0). The `--force` flag overrides this and regenerates unconditionally.
@@ -261,6 +272,13 @@ All HTTP requests flow through a shared retry decorator (`core/retry.py`) and a 
 
 **ADR-12: Deliverable Protocol with registry-driven build.**
 Every deliverable implements a `Deliverable` protocol defining `key`, `folder`, `required`, `dependencies`, `gather_prompts()`, and `generate()`. A `DELIVERABLE_REGISTRY` in `deliverables/registry.py` lists all deliverables in dependency order. The build command iterates the registry rather than hardcoding steps. CLI modules are thin wrappers that parse arguments and delegate to the deliverable implementation, keeping all business logic in `deliverables/` and making it unit-testable without `CliRunner`. Adding a new deliverable means implementing the protocol, registering it, and adding a thin CLI wrapper.
+Deliverables must not call raw HTTP endpoints directly.
+All data access must go through `data/providers.py`.
+
+**ADR-12a: Query Contracts**
+- Providers expose typed query functions (e.g., `get_pnl(year, method)`)
+- Cache keys are generated only at provider layer
+- Deliverables cannot construct endpoint URLs directly
 
 **ADR-13: Graceful Gusto degradation.**
 Gusto connectivity is optional. If Gusto auth is not configured (no tokens in keyring, no credentials), the build command auto-skips Gusto-dependent deliverables (Payroll Summary and Payroll Reconciliation) with a clear warning. The validation report marks them as "Skipped (Gusto not connected)" rather than "Missing." This allows the tool to produce a useful packet for users who don't use Gusto, without requiring code changes or special flags. QBO is always required.
@@ -297,24 +315,64 @@ Gusto connectivity is optional. If Gusto auth is not configured (no tokens in ke
 - Derives `{CompanyName}_{TaxYear}_CPA_Packet/` from QBO Company Info API
 - Sanitizes company name for filesystem: replace spaces with `_`, remove `/ \ : * ? " < > |`, collapse multiple underscores
 - Creates directories lazily on first write
-- Always creates `_meta/` on `build`
+- Always creates `_meta/public/` and `_meta/private/` on `build`
 
 **2. Validation Engine** (`packet/validator.py`)
 - Iterates the `DELIVERABLE_REGISTRY` to determine expected files per deliverable
 - Cross-references per-deliverable metadata in `_meta/` for fingerprint and artifact checks
 - Uses regex patterns to match naming conventions
 - Classifies each deliverable as Present / Missing / Incomplete / Skipped
-- Writes `_meta/validation_report.txt`
+- Writes `_meta/public/validation_report.txt`
+- Writes `_meta/public/packet_manifest.json`
+- Writes `00_PACKET_SUMMARY.md` at the packet root
+
+**2b. Packet Manifest (Public, Run-scoped)**
+- File: `_meta/public/packet_manifest.json`
+- Purpose: single run record that is safe to share with the CPA and safe to zip.
+- Contains:
+  - `tool_version`, `run_id`, `year`, `method`, `started_at`, `finished_at`
+  - `deliverables[]`: `{key, required, status, artifacts[], timing_ms, warnings[]}`
+  - `validation_summary`: counts by status + recommended exit code
+- Must not include secrets, tokens, raw payloads, or sensitive identifiers.
+
+**2c. Per-Deliverable Metadata (Private by default)**
+- File: `_meta/private/deliverables/{key}_metadata.json`
+- Contains inputs + fingerprint, schema versions, cache keys used, and artifact list (may include private raw JSON paths).
+
+
+**2a. Packet Summary File**
+- File: `00_PACKET_SUMMARY.md`
+- Plain Markdown (no styling)
+- Contains:
+  - Tool version
+  - Tax year
+  - Accounting method
+  - List of generated deliverables
+  - List of skipped deliverables (with reason)
+  - Validation warnings
+  - Reconciliation flags (balance equation mismatch, payroll variance, retained earnings delta)
+  - Explicit note if payroll was unavailable
+- Must not include secrets, tokens, raw payloads, or sensitive identifiers
+
 - Returns structured validation result for exit code determination
 
 **3. Zip Archiver** (`packet/zipper.py`)
 - Creates `<base_dir>/<PacketName>.zip`
-- Includes entire packet folder + validation report
+- Includes entire packet folder, but includes `_meta/public/` only (excludes `_meta/private/` unless flags override)
 - Handles existing zip: Overwrite / Copy (timestamped) / Abort (respects `RunContext.on_conflict`)
 - Does NOT delete source folder
 
 **4. Build Command** (`cli/build.py`)
-- Default mode: authenticate → check Gusto availability → collect interactive inputs upfront → generate all deliverables via registry in dependency order → validate → write report → zip
+- Default mode:
+  - generate run_id
+  - authenticate
+  - check Gusto availability
+  - collect interactive inputs
+  - generate deliverables
+  - record per-deliverable timing in packet_manifest.json
+  - validate
+  - write report
+  - zip
 - Validate-only mode (`--validate-only`): skip generation, validate existing files → report → zip
 - Incremental mode (`--incremental`): skip deliverables whose input fingerprint matches and outputs pass integrity checks
 - Force mode (`--force`): ignore all caches and metadata, re-fetch and regenerate everything
@@ -356,6 +414,7 @@ cpapacket build --year YYYY --out <base_dir> --validate-only       # validate + 
 cpapacket build --year YYYY --out <base_dir> --incremental         # skip unchanged deliverables
 cpapacket build --year YYYY --out <base_dir> --force               # re-fetch and regenerate everything
 cpapacket build --year YYYY --out <base_dir> --skip payroll        # generate all except payroll
+cpapacket privacy check                                           # repo/fixture scan for sensitive artifacts (CI gate)
 ```
 
 **5. File Exists Handler** (`utils/prompts.py`)
@@ -374,7 +433,7 @@ cpapacket build --year YYYY --out <base_dir> --skip payroll        # generate al
   - **Suspense/Ask My Accountant balance**: checks for non-zero balance in any account named "Ask My Accountant" or "Suspense."
   - **Open items from prior years**: counts unpaid invoices/bills dated before 01/01/YYYY.
   - **Payroll sync status**: if Gusto is connected, checks that the most recent payroll run's QBO sync completed.
-- Output: warnings to console + `_meta/data_health_check.txt`
+- Output: warnings to console + `_meta/public/data_health_check.txt`
 - If any issues found in interactive mode: prompts "Data quality issues detected. Continue anyway? (y/N)"
 - In non-interactive mode: logs warnings and continues
 - Does NOT affect exit codes (these are upstream data issues, not tool failures)
@@ -422,7 +481,7 @@ cpapacket build --year YYYY --out <base_dir> --skip payroll        # generate al
 | 08_Estimated_Tax_Payments | No | Local tracking aid; not a CPA deliverable | tracker + deadlines CSV | `estimated_tax_tracker_YYYY.*` |
 | 09_Retained_Earnings_Rollforward | Yes | Required for M-2 reconciliation | PDF + CSV | `Retained_Earnings_Rollforward_YYYY.*` |
 | 10_Payroll_Reconciliation | Yes (skippable if Gusto absent) | CPA verifies payroll sync integrity | PDF + CSV | `payroll_reconciliation_YYYY.*` |
-| _meta | Always exists | Internal | validation_report.txt | — |
+| _meta/public | Always exists | Public metadata | validation_report.txt, packet_manifest.json | — |
 
 ---
 
@@ -495,7 +554,11 @@ for month in 1..12:
     slices.append(normalize(response))
 ```
 
-Each monthly slice is cached individually at `_meta/cache/qbo/general_ledger/YYYY/MM_raw.json`. A partial failure (e.g., timeout on month 7) can resume from the last successful month without re-fetching months 1–6. Slice pulls use bounded concurrency (`GUSTO_MAX_CONCURRENCY`) via the shared limiter.
+Each monthly slice is cached via the standard `SessionDataStore` cache entry contract:
+- source: `qbo`
+- endpoint: `reports/GeneralLedgerDetail`
+- params: `{start_date, end_date}`
+- stored under `_meta/private/cache/` as `{cache_key}.json.gz` (see Appendix E). A partial failure (e.g., timeout on month 7) can resume from the last successful month without re-fetching months 1–6. Slice pulls use bounded concurrency (`QBO_MAX_CONCURRENCY`) via the shared limiter.
 
 **Merge & Write Strategy:**
 Monthly slices are merged and written to CSV in streaming fashion via `atomic_write`. The writer processes one month at a time: for each normalized row, it checks `txn_id` against `seen_ids: set[str]` for deduplication, then writes the row immediately to the temp file. This avoids holding the full year's ledger in memory. The `seen_ids` set (storing only transaction ID strings) is the only persistent memory allocation.
@@ -737,7 +800,8 @@ Both E9 and E10 call `MiscodeDetector.scan(gl_rows, owner_keywords)` and receive
 - `cpapacket auth qbo logout` → clears stored tokens
 - `cpapacket auth gusto login|status|logout` → same for Gusto
 
-**Token Refresh Strategy:**
+**Token Refresh Strategy:
+- Serialize refresh per provider (single lock) to prevent concurrent refresh races under build parallelism.**
 - Check expiry before each request (handled by `core/retry.py`)
 - If expired, attempt refresh
 - If refresh fails, prompt user to re-authenticate
@@ -889,6 +953,7 @@ class RunContext(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     year: int
+    run_id: str  # uuid4 per run
     year_source: Literal["explicit", "inferred", "default"]  # how --year was resolved
     out_dir: Path
     method: Literal["accrual", "cash"] = "accrual"            # P&L accounting method (build only)
@@ -896,6 +961,10 @@ class RunContext(BaseModel):
     on_conflict: Literal["prompt", "overwrite", "copy", "abort"]
     incremental: bool = False
     force: bool = False
+    no_cache: bool = False
+    no_raw: bool = False
+    redact: bool = False
+    include_debug: bool = False
     verbose: bool = False
     quiet: bool = False
     plain: bool = False
@@ -977,6 +1046,8 @@ SCHEMA_VERSIONS = {
 
 ### 5.2 Security
 
+**5.2.1 Runtime Security**
+
 | Concern | Mitigation |
 |---------|------------|
 | OAuth tokens at rest | `keyring` for OS-level secure storage; fallback to encrypted local file in `~/.config/cpapacket/` |
@@ -985,6 +1056,66 @@ SCHEMA_VERSIONS = {
 | Financial data | Never logged to console beyond summary totals; no telemetry |
 | Token in memory | Cleared after use; not stored in global state |
 | Error messages | Include endpoint/report name + parameters but never secrets/tokens |
+
+**5.2.2 Repository Security (`.gitignore` and Data Hygiene)**
+
+The repository **must never contain** user financial data, API credentials, or personally identifiable information. A `.gitignore` file is scaffolded in Phase 0 and enforced by CI. The following categories are excluded from version control:
+
+| Category | Patterns | What it protects |
+|----------|----------|------------------|
+| **OAuth credentials** | `.env`, `.env.*`, `*.pem`, `*.key` | Client ID, client secret, token material |
+| **Packet output** | `*_CPA_Packet/`, `*_CPA_Packet.zip` | Full P&L, balance sheet, GL, payroll breakdowns, contractor payments, distributions, tax records — the user's complete financial identity |
+| **Metadata / cache** | `_meta/` | Raw API responses (company name, account numbers, transaction details, employee data), `cpapacket.log` (DEBUG-level API call parameters), deliverable metadata (company name, tax year, input parameters) |
+| **Config directory artifacts** | `tax_tracker_*.json`, `tax_deadlines_*.json` | Estimated tax payment amounts and dates by jurisdiction |
+| **Generated deliverables** | `*.pdf`, output CSVs in packet dirs | CPA-ready financial statements with real dollar amounts and names |
+
+**5.2.3 Test Fixture Policy**
+
+Test fixtures in `tests/fixtures/` **must be synthetic data only**. Never record real QBO/Gusto API responses and commit them.
+
+**Rules for fixture creation:**
+- Use fictional company names (e.g., "Acme Widgets Inc"), employee names, and vendor names
+- Use obviously fake dollar amounts that do not correspond to real transactions
+- Strip or replace any fields that could contain real identifiers: company IDs, employee IDs, SSN fragments, EIN, bank account references
+- Review all fixture JSON files before first commit; add a comment header noting synthetic status
+- CI check: a pre-commit hook or CI step scans for common PII patterns (SSN format `\d{3}-\d{2}-\d{4}`, EIN format `\d{2}-\d{7}`) in any staged `.json` file under `tests/`
+
+**5.2.4 Pre-Publish Checklist**
+
+Before making the repository public:
+1. Verify `.gitignore` is committed and covers all patterns listed above
+2. Run `git log --all --diff-filter=A -- '*.env' '*.json' '*.pdf' '*.csv' '*_CPA_Packet*'` to confirm no sensitive files exist in git history
+3. If sensitive files were ever committed, use `git filter-repo` to purge them from history before publishing (force-push after rewrite)
+4. Confirm `tests/fixtures/` contains only synthetic data
+5. Confirm no real company name, employee name, or dollar amount appears anywhere in committed code, comments, or documentation
+6. Search for hardcoded secrets: `grep -rn "Bearer\|access_token\|client_secret\|refresh_token" src/ tests/`
+
+**5.2.5 Privacy Guardrails (Automated)**
+- Add `cpapacket privacy check`
+  - Fails if `.env*`, `_meta/`, `*_CPA_Packet/`, or generated PDFs/CSVs exist in repo tree
+  - Scans `tests/fixtures/` for SSN/EIN/account/routing patterns
+- CI must fail if this check fails
+
+**5.2.6 Public Zip Contract**
+- Default zip includes:
+  - deliverable folders (PDF/CSV outputs)
+  - `00_PACKET_SUMMARY.md`
+  - `_meta/public/validation_report.txt`
+  - `_meta/public/packet_manifest.json`
+  - `_meta/public/data_health_check.txt`
+- Default zip excludes:
+  - `_meta/private/**` (cache, debug logs, raw payload artifacts, salts)
+- Overrides:
+  - `--include-debug` may include `_meta/private/cpapacket.log`.
+
+**Privacy Check Command Contract**
+- Command: `cpapacket privacy check`
+- Intended use: local preflight and CI gate.
+- Checks:
+  - Repo tree must not contain: `.env*`, `_meta/`, `*_CPA_Packet/`, `*_CPA_Packet.zip`, or any `*.pdf`/`*.csv` under the repo (unless under an explicitly ignored build output path).
+  - `tests/fixtures/` scanned for SSN/EIN/account/routing patterns.
+- Output: prints findings and exits non-zero if any violations are found.
+
 
 ### 5.3 Reliability & Error Handling
 
@@ -1001,7 +1132,7 @@ SCHEMA_VERSIONS = {
 - Print human-readable message to stderr
 - Include actionable guidance (e.g., "Run `cpapacket auth qbo login` to re-authenticate")
 - Never expose raw stack traces to console unless `--verbose` flag is set
-- Always log full stack traces to `_meta/cpapacket.log` regardless of verbosity
+- Always log full stack traces to `_meta/private/cpapacket.log` regardless of verbosity
 - Log API request/response metadata (endpoint, status code, duration) at DEBUG level
 
 ### 5.4 Accessibility & Usability
@@ -1142,6 +1273,8 @@ tests/fixtures/
 - typecheck: mypy --strict
 - test: pytest --cov=cpapacket --cov-fail-under=85
 - schema: pytest tests/test_schema_versions.py  # CSV column order matches declared versions
+- privacy: cpapacket privacy check
+- secrets: gitleaks or trufflehog
 - build: pip install . && cpapacket --version && cpapacket --help
 - platforms: ubuntu-latest, macos-latest
 ```
@@ -1231,6 +1364,8 @@ tests/fixtures/
 
 #### Phase 0 — Foundations (Weeks 1-2)
 - [ ] Project scaffolding (pyproject.toml, src layout, test structure)
+- [ ] `.gitignore` with all patterns from Section 5.2.2 (credentials, packet output, _meta/, generated files)
+- [ ] Pre-commit hook: PII pattern scan on staged fixture files (SSN, EIN formats)
 - [ ] `RunContext` Pydantic model + CLI global flag wiring + `--year` inference logic
 - [ ] `Deliverable` protocol + `DeliverableResult` + `DELIVERABLE_REGISTRY` scaffold
 - [ ] `core/filesystem.py`: atomic_write, path sanitization
@@ -1241,8 +1376,8 @@ tests/fixtures/
 - [ ] QBO Company Info fetch + company name sanitization
 - [ ] Packet directory structure manager
 - [ ] File-exists prompt utility with RunContext-based on_conflict
-- [ ] SessionDataStore: in-memory cache + `_meta/cache/` disk persistence
-- [ ] Structured logging setup (RichHandler console + FileHandler to `_meta/cpapacket.log`)
+- [ ] SessionDataStore: in-memory cache + `_meta/private/cache/` disk persistence
+- [ ] Structured logging setup (RichHandler console + FileHandler to `_meta/private/cpapacket.log`)
 - [ ] PDF writer base (reportlab CPA template: header, body, footer, via atomic_write)
 - [ ] CSV writer base (batch + streaming modes, via atomic_write)
 - [ ] JSON writer (raw dump, via atomic_write)
@@ -1370,6 +1505,10 @@ All output filenames include the tax year for unambiguous identification when ex
 | `--on-conflict` | choice | prompt (interactive) / abort (non-interactive) | `overwrite`, `copy`, or `abort` — controls file-exists behavior without prompting |
 | `--incremental` | bool | false | Skip deliverable regeneration if input fingerprint matches and outputs exist |
 | `--force` | bool | false | Ignore all caches and metadata; re-fetch API data and regenerate all outputs |
+| `--no-cache` | bool | false | Disable disk cache writes |
+| `--no-raw` | bool | false | Do not write deliverable raw JSON artifacts |
+| `--redact` | bool | false | Write redacted raw JSON (names/IDs removed) |
+| `--include-debug` | bool | false | Include debug log in zip |
 | `--owner-keywords` | string | none | Comma-separated owner name keywords for miscoding detection |
 
 **Build-specific flags:**
@@ -1389,81 +1528,40 @@ All output filenames include the tax year for unambiguous identification when ex
 
 ## Appendix E: SessionDataStore Cache Specification
 
-**Cache Location:** `_meta/cache/` within the packet directory
+**Cache Location:** `_meta/private/cache/` within the packet directory
 
-**Cache Key:** `sha256(json.dumps(sorted({"source": "qbo"|"gusto", "endpoint": str, "params": dict}.items())))`
+**Cache Key (canonical):**
+`sha256(canonical_json({"source": "qbo"|"gusto", "endpoint": str, "params": dict, "schema": str, "cache_version": int}))`
 
-**Cache Entry Format:**
+**Cache Entry Files (single canonical format):**
+- `{cache_key}.json.gz`  (gzip-compressed JSON payload)
+- `{cache_key}.meta.json` (small JSON metadata; uncompressed)
+
+**Cache Entry Metadata (`*.meta.json`)**
 ```json
 {
-  "key": "abc123...",
+  "cache_version": 1,
+  "created_at": "2026-03-03T12:34:56Z",
   "source": "qbo",
   "endpoint": "reports/ProfitAndLoss",
-  "params": {"start_date": "2025-01-01", "end_date": "2025-12-31", "accounting_method": "Accrual"},
-  "fetched_at": "2025-03-15T10:30:00Z",
-  "ttl_hours": 24,
-  "data": { ... }
+  "params": {"start_date": "2025-01-01", "end_date": "2025-12-31", "accounting_method": "accrual"},
+  "schema": "reports/ProfitAndLoss:v1",
+  "payload_sha256": "sha256:...",
+  "http": {"status_code": 200, "etag": null, "last_modified": null, "request_id": null},
+  "ttl_seconds": null
 }
 ```
 
 **Behavior:**
-- On cache hit with valid TTL: return `data` directly, log cache hit at DEBUG
-- On cache miss or expired TTL: call API, store result, return `data`
-- On `--force` flag: always call API regardless of cache state
-- General Ledger: 12 separate cache entries (one per monthly slice), stored at `_meta/cache/qbo/general_ledger/YYYY/MM_raw.json`
-- Company Info: cached indefinitely within a session (company name doesn't change)
-- Thread safety: `threading.Lock` per cache key for concurrent `build` steps 2–5
+- **Request coalescing:** concurrent requests for the same cache key must await a single in-flight HTTP call.
+- **Storage format:** gzip-compressed JSON (`.json.gz`).
+- **Integrity:** validate `payload_sha256` against the uncompressed payload on read.
+  - On mismatch: treat as cache miss, quarantine the corrupt entry under `_meta/private/cache/quarantine/`, then re-fetch.
+- **Thread safety:** a lock per cache key protects both read/validate and in-flight request coalescing.
+- **Privacy modes:**
+  - `--no-cache` disables disk cache writes (still allows in-memory caching within a run).
+  - `--force` bypasses both disk and in-memory caches (always fetch).
 
-## Appendix F: CLI Command Summary
-
-| Command | Purpose | Key Outputs |
-|---------|---------|-------------|
-| `build --year --out` | Generate + validate + zip | All deliverables + `_meta/validation_report.txt` + zip |
-| `build --year --out --validate-only` | Validate + zip (no API calls) | `_meta/validation_report.txt` + zip |
-| `build --year --out --incremental` | Smart rebuild (skip unchanged) | Only stale/missing deliverables regenerated |
-| `build --year --out --method cash` | Generate with cash-basis P&L | All deliverables (P&L uses cash method) |
-| `pnl --start --end --method --out` | P&L | PDF + CSV + raw JSON + metadata |
-| `balance-sheet --year --out` | Balance sheet | PDF + CSV + raw JSON + metadata |
-| `prior-balance-sheet --year --out` | Prior balance sheet | PDF + CSV + raw JSON + metadata |
-| `general-ledger --year --out` | General ledger | CSV + raw JSON + metadata |
-| `payroll-summary --year --out` | Payroll package (requires Gusto) | Company + per-employee outputs + metadata |
-| `contractor-summary --year --out` | 1099 review summary | PDF + CSV + JSON (+ flagged CSV) + metadata |
-| `tax init/update/mark-paid/status --year` | Tracker + deadlines | Local state JSON + packet PDFs/CSVs |
-| `payroll-recon --year --out` | Payroll cost check (requires Gusto) | PDF + CSV + JSON + metadata |
-| `distributions --year --out` | Distributions + flags | PDF + CSV + JSON (+ flagged CSV) + metadata |
-| `retained-earnings --year --out` | Rollforward | PDF + CSV + JSON + metadata |
-| `check --year` | QBO data quality | Console warnings + `_meta/data_health_check.txt` |
-| `doctor` | Environment/auth health | Console report |
-| `auth qbo\|gusto login\|status\|logout` | Auth flows | Token store changes + console report |
-
-## Appendix G: Named Constants and Tolerance Thresholds
-
-All magic numbers are defined in `constants.py` as named constants. Tests reference these constants to ensure consistency.
-
-```python
-from decimal import Decimal
-
-# --- Financial Tolerances ---
-BALANCE_EQUATION_TOLERANCE = Decimal("1.00")       # Assets vs Liabilities + Equity (E3)
-RETAINED_EARNINGS_TOLERANCE = Decimal("1.00")       # Expected vs Actual ending RE (E9)
-PAYROLL_RECON_TOLERANCE = Decimal("5.00")            # Gusto vs QBO payroll total (E8)
-
-# --- Regulatory Thresholds ---
-CONTRACTOR_1099_THRESHOLD = Decimal("600.00")        # Non-card payment threshold for 1099 review (E6)
-
-# --- Miscoding Detection ---
-MISCODE_HIGH_AMOUNT_THRESHOLD = Decimal("500.00")    # "high amount" signal (E10 R3, R5)
-MISCODE_ROUND_NUMBER_DIVISOR = Decimal("500.00")     # round-number heuristic (E10 R4)
-MISCODE_CONFIDENCE_HIGH = 6                           # score >= this → High confidence
-MISCODE_CONFIDENCE_MEDIUM = 4                         # score >= this → Medium confidence
-MISCODE_CONFIDENCE_LOW = 2                            # score >= this → Low confidence (below = not flagged)
-
-# --- API Limits ---
-QBO_MAX_CONCURRENCY = 4                               # max simultaneous QBO API requests
-GUSTO_MAX_CONCURRENCY = 2                             # max simultaneous Gusto API requests
-RETRY_MAX_429 = 5                                     # max retries on 429 Too Many Requests
-RETRY_MAX_5XX = 3                                     # max retries on 5xx Server Error
-
-# --- Cache ---
-CACHE_TTL_HOURS = 24                                  # API response cache time-to-live
-```
+**Canonical JSON:**
+- Must be deterministic: sorted keys, stable float-free encoding, and normalized date strings.
+- Used for both cache key generation and `input_fingerprint` generation.

@@ -1,0 +1,94 @@
+# =============================================================================
+# cpapacket .gitignore
+# CRITICAL: This file prevents committing financial data, credentials, and PII.
+# Do NOT remove entries without reviewing Section 5.2.2 of PLAN.md.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# 1. OAuth Credentials and Secrets
+# ---------------------------------------------------------------------------
+.env
+.env.*
+.env.local
+.env.production
+*.pem
+*.key
+*.p12
+*.pfx
+
+# ---------------------------------------------------------------------------
+# 2. CPA Packet Output (contains full financial data)
+#    Pattern: {CompanyName}_{TaxYear}_CPA_Packet/
+# ---------------------------------------------------------------------------
+*_CPA_Packet/
+*_CPA_Packet.zip
+
+# ---------------------------------------------------------------------------
+# 3. Metadata Directory (raw API responses, logs, cache, fingerprints)
+#    Contains: company name, account numbers, transaction details, employee
+#    data, DEBUG-level API call logs, deliverable metadata with input params
+# ---------------------------------------------------------------------------
+_meta/
+
+# ---------------------------------------------------------------------------
+# 4. Generated Financial Documents
+#    PDFs contain real dollar amounts, names, account details
+#    CSVs in output dirs contain full transaction-level data
+# ---------------------------------------------------------------------------
+*.pdf
+
+# ---------------------------------------------------------------------------
+# 5. Local Config Artifacts (tax tracker state)
+#    Normally in ~/.config/cpapacket/ (outside repo), but block the patterns
+#    in case someone copies them into the working directory
+# ---------------------------------------------------------------------------
+tax_tracker_*.json
+tax_deadlines_*.json
+
+# ---------------------------------------------------------------------------
+# 6. Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+dist/
+build/
+*.whl
+.eggs/
+
+# ---------------------------------------------------------------------------
+# 7. Virtual Environments
+# ---------------------------------------------------------------------------
+venv/
+.venv/
+env/
+
+# ---------------------------------------------------------------------------
+# 8. Testing and Coverage
+# ---------------------------------------------------------------------------
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# ---------------------------------------------------------------------------
+# 9. IDE / Editor
+# ---------------------------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ---------------------------------------------------------------------------
+# 10. OS-level
+# ---------------------------------------------------------------------------
+*.log
+*.tmp
