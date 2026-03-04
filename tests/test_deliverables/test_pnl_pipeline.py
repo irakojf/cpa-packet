@@ -52,39 +52,36 @@ def _run_context(tmp_path: Path) -> RunContext:
     )
 
 
-def test_pnl_pipeline_generates_csv_pdf_and_metadata(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    fixture = json.loads(
-        Path("tests/fixtures/qbo/profit_and_loss_annual.json").read_text(encoding="utf-8")
-    )
-
+def _run_deliverable_with_fixture(
+    tmp_path: Path, fixture_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[respx.MockRoute, Path, Path, Path, Path, Any]:
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
     cache_dir = tmp_path / "_meta" / "private" / "cache"
     store = SessionDataStore(cache_dir=cache_dir)
+
+    fake_pdf_target: dict[str, Path] = {}
+
+    def fake_write_report(
+        self: object,
+        output_path: str | Path,
+        *,
+        company_name: str,
+        report_title: str,
+        date_range_label: str,
+        body_lines: list[Any],
+    ) -> Path:
+        destination = Path(output_path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"%PDF-1.4\n")
+        fake_pdf_target["path"] = destination
+        return destination
+
+    monkeypatch.setattr("cpapacket.deliverables.pnl.PdfWriter.write_report", fake_write_report)
 
     with httpx.Client(base_url="https://api.example.test") as http_client:
         qbo_client = _HttpQboClient(http_client)
         providers = DataProviders(store=store, qbo_client=qbo_client, gusto_client=None)
         deliverable = PnlDeliverable()
-
-        fake_pdf_target: dict[str, Path] = {}
-
-        def fake_write_report(
-            self: object,
-            output_path: str | Path,
-            *,
-            company_name: str,
-            report_title: str,
-            date_range_label: str,
-            body_lines: list[Any],
-        ) -> Path:
-            destination = Path(output_path)
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_bytes(b"%PDF-1.4\n")
-            fake_pdf_target["path"] = destination
-            return destination
-
-        monkeypatch.setattr("cpapacket.deliverables.pnl.PdfWriter.write_report", fake_write_report)
 
         with respx.mock(assert_all_called=True) as router:
             route = router.get("https://api.example.test/reports/ProfitAndLoss").mock(
@@ -113,6 +110,23 @@ def test_pnl_pipeline_generates_csv_pdf_and_metadata(
     )
     meta_path = tmp_path / "_meta" / "pnl_metadata.json"
 
+    return route, csv_path, pdf_path, raw_path, meta_path, result
+
+
+def test_pnl_pipeline_generates_csv_pdf_and_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (
+        route,
+        csv_path,
+        pdf_path,
+        raw_path,
+        meta_path,
+        result,
+    ) = _run_deliverable_with_fixture(
+        tmp_path, Path("tests/fixtures/qbo/profit_and_loss_annual.json"), monkeypatch
+    )
+
     assert route.call_count == 1
     assert csv_path.exists()
     assert pdf_path.exists()
@@ -124,4 +138,34 @@ def test_pnl_pipeline_generates_csv_pdf_and_metadata(
     assert str(csv_path) in metadata["artifacts"]
     assert str(pdf_path) in metadata["artifacts"]
     assert raw_path.exists()
+    assert result.success
+
+
+def test_pnl_csv_snapshot_matches_golden(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    route, csv_path, _, _, _, result = _run_deliverable_with_fixture(
+        tmp_path, Path("tests/fixtures/qbo/profit_and_loss_annual.json"), monkeypatch
+    )
+
+    lines = csv_path.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == "section,level,row_type,label,amount,path"
+    assert lines[1].startswith("Income,0,header,Income,30000.00,Income")
+    assert any("Product Revenue" in line for line in lines)
+    assert "2025-01-01_to_2025-12-31" in csv_path.name
+    assert route.call_count == 1
+    assert result.success
+
+
+def test_pnl_csv_snapshot_handles_empty_fixture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    route, csv_path, _, _, _, result = _run_deliverable_with_fixture(
+        tmp_path, Path("tests/fixtures/qbo/pnl_empty_2025.json"), monkeypatch
+    )
+
+    lines = csv_path.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == "section,level,row_type,label,amount,path"
+    assert lines[1:] == [
+        "Uncategorized,0,total,No transactions found,0.00,No transactions found"
+    ]
+    assert route.call_count == 1
     assert result.success
