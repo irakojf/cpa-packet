@@ -86,13 +86,15 @@ def test_atomic_write_supports_concurrent_writes_to_different_files(tmp_path: Pa
 def test_atomic_write_rejects_unsupported_modes(tmp_path: Path) -> None:
     destination = tmp_path / "unsupported.txt"
 
-    with pytest.raises(ValueError, match="supports write/xb modes only"), atomic_write(
-        destination, mode="r"
+    with (
+        pytest.raises(ValueError, match="supports write/xb modes only"),
+        atomic_write(destination, mode="r"),
     ):
         pass
 
-    with pytest.raises(ValueError, match="supports write/xb modes only"), atomic_write(
-        destination, mode="a"
+    with (
+        pytest.raises(ValueError, match="supports write/xb modes only"),
+        atomic_write(destination, mode="a"),
     ):
         pass
 
@@ -115,11 +117,55 @@ def test_sanitize_filesystem_name_defaults_for_blank_values() -> None:
         ("name__with___underscores", "name_with_underscores"),
         ("Café Déjà Vu", "Café_Déjà_Vu"),
         ("x" * 512, "x" * 512),
-        ("/\\:*?\"<>|", "untitled"),
+        ('/\\:*?"<>|', "untitled"),
     ],
 )
 def test_sanitize_filesystem_name_edge_cases(raw: str, expected: str) -> None:
     assert sanitize_filesystem_name(raw) == expected
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("", "untitled"),
+        ("\t\n\r", "untitled"),
+        ("_", "untitled"),
+        ("___", "untitled"),
+        ("a", "a"),
+        ("  leading", "leading"),
+        ("trailing  ", "trailing"),
+        ("_prefix_", "prefix"),
+        ("hello\tworld\nnewline", "hello_world_newline"),
+        ("Ünïcödé Çömpàny", "Ünïcödé_Çömpàny"),
+        ("日本語テスト", "日本語テスト"),
+        ("mix/of:special<chars>and Unicode Ñ", "mix_of_special_chars_and_Unicode_Ñ"),
+        ("dots.are.fine", "dots.are.fine"),
+        ("dashes-are-fine", "dashes-are-fine"),
+        ("parens(ok)too", "parens(ok)too"),
+    ],
+)
+def test_sanitize_filesystem_name_comprehensive(raw: str, expected: str) -> None:
+    assert sanitize_filesystem_name(raw) == expected
+
+
+def test_sanitize_filesystem_name_output_is_filesystem_safe() -> None:
+    """Verify sanitized output contains no filesystem-unsafe characters."""
+    import re
+
+    unsafe = re.compile(r"[\\/:*?\"<>|]")
+    inputs = [
+        'ACME "Holdings" Inc.',
+        "path/to\\danger:zone*wild?card",
+        "   spaces   everywhere   ",
+        "<script>alert</script>",
+        "pipe|separated|values",
+        "",
+        "normal_name",
+    ]
+    for raw in inputs:
+        result = sanitize_filesystem_name(raw)
+        assert not unsafe.search(result), f"unsafe chars in result for {raw!r}: {result!r}"
+        assert result, f"empty result for {raw!r}"
 
 
 def test_ensure_directory_creates_parents(tmp_path: Path) -> None:
@@ -127,4 +173,12 @@ def test_ensure_directory_creates_parents(tmp_path: Path) -> None:
     resolved = ensure_directory(target)
     assert resolved == target
     assert target.exists()
+    assert target.is_dir()
+
+
+def test_ensure_directory_idempotent(tmp_path: Path) -> None:
+    target = tmp_path / "existing"
+    target.mkdir()
+    resolved = ensure_directory(target)
+    assert resolved == target
     assert target.is_dir()

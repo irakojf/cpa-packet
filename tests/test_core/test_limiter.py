@@ -64,8 +64,10 @@ def test_limiter_enforces_qbo_concurrency_bound() -> None:
 def test_limiter_enforces_service_specific_limits() -> None:
     limiter = ServiceLimiter(config=LimiterConfig(qbo_max=3, gusto_max=1))
 
-    with limiter.acquire("gusto"), pytest.raises(TimeoutError, match="timed out"), limiter.acquire(
-        "gusto", timeout=0.01
+    with (
+        limiter.acquire("gusto"),
+        pytest.raises(TimeoutError, match="timed out"),
+        limiter.acquire("gusto", timeout=0.01),
     ):
         pass
 
@@ -83,3 +85,51 @@ def test_limiter_releases_slot_when_exception_occurs() -> None:
     # If the slot was not released in __exit__, this acquire would time out.
     with limiter.acquire("qbo", timeout=0.05):
         assert True
+
+
+def test_limiter_enforces_gusto_concurrency_bound() -> None:
+    """Threaded test: gusto peak concurrency respects configured limit."""
+    limiter = ServiceLimiter(config=LimiterConfig(qbo_max=4, gusto_max=1))
+
+    active = 0
+    peak = 0
+    lock = threading.Lock()
+
+    def worker() -> None:
+        nonlocal active, peak
+        with limiter.acquire("gusto"):
+            with lock:
+                active += 1
+                peak = max(peak, active)
+            time.sleep(0.01)
+            with lock:
+                active -= 1
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [pool.submit(worker) for _ in range(10)]
+        for future in futures:
+            future.result()
+
+    assert peak <= 1
+
+
+def test_limiter_services_are_independent() -> None:
+    """Holding QBO slot does not block Gusto and vice versa."""
+    limiter = ServiceLimiter(config=LimiterConfig(qbo_max=1, gusto_max=1))
+
+    with limiter.acquire("qbo"), limiter.acquire("gusto", timeout=0.1):
+        pass
+
+
+def test_limiter_limit_for_returns_configured_values() -> None:
+    limiter = ServiceLimiter(config=LimiterConfig(qbo_max=5, gusto_max=2))
+    assert limiter.limit_for("qbo") == 5
+    assert limiter.limit_for("gusto") == 2
+
+
+def test_limiter_default_config_uses_constants() -> None:
+    from cpapacket.utils.constants import GUSTO_MAX_CONCURRENCY, QBO_MAX_CONCURRENCY
+
+    limiter = ServiceLimiter()
+    assert limiter.limit_for("qbo") == QBO_MAX_CONCURRENCY
+    assert limiter.limit_for("gusto") == GUSTO_MAX_CONCURRENCY
