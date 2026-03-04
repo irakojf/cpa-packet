@@ -1,0 +1,129 @@
+{
+  "general_ledger_by_month": {
+    "1": {
+      "Rows": {
+        "Row": []
+      }
+    },
+    "2": {
+      "Rows": {
+        "Row": [
+          {
+            "type": "Section",
+            "Header": {
+              "ColData": [
+                {
+                  "value": "Uncategorized Income"
+                },
+                {
+                  "value": "125.50"
+                }
+              ]
+            },
+            "Rows": {
+              "Row": []
+            }
+          },
+          {
+            "ColData": [
+              {
+                "value": "Uncategorized Expense"
+              },
+              {
+                "value": "(10.00)"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "3": {
+      "Rows": {
+        "Row": []
+      }
+    },
+    "4": {
+      "Rows": {
+        "Row": []
+      }
+    },
+    "5": {
+      "Rows": {
+        "Row": []
+      }
+    },
+    "6": {
+      "Rows": {
+        "Row": []
+      }
+    },
+    "7": {
+      "Rows": {
+        "Row": []
+      }
+    },
+    "8": {
+      "Rows": {
+        "Row": []
+      }
+    },
+    "9": {
+      "Rows": {
+        "Row": []
+      }
+    },
+    "10": {
+      "Rows": {
+        "Row": []
+      }
+    },
+    "11": {
+      "Rows": {
+        "Row": []
+      }
+    },
+    "12": {
+      "Rows": {
+        "Row": []
+      }
+    }
+  },
+  "balance_sheet_year_end": {
+    "Rows": {
+      "Row": [
+        {
+          "type": "Section",
+          "Header": {
+            "ColData": [
+              {
+                "value": "Undeposited Funds"
+              },
+              {
+                "value": "42.12"
+              }
+            ]
+          },
+          "Rows": {
+            "Row": []
+          }
+        },
+        {
+          "type": "Section",
+          "Header": {
+            "ColData": [
+              {
+                "value": "Ask My Accountant"
+              },
+              {
+                "value": "100.00"
+              }
+            ]
+          },
+          "Rows": {
+            "Row": []
+          }
+        }
+      ]
+    }
+  }
+}
