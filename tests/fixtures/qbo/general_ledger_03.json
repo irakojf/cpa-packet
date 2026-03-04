@@ -1,0 +1,48 @@
+{
+  "Header": {
+    "ReportName": "GeneralLedger",
+    "StartPeriod": "2025-03-01",
+    "EndPeriod": "2025-03-31",
+    "Currency": "USD"
+  },
+  "Rows": {
+    "Row": [
+      {
+        "TxnId": "txn-2025-02-28-boundary",
+        "TxnDate": "2025-02-28",
+        "Description": "Boundary carryover from previous month",
+        "AccountName": "Cash",
+        "AccountType": "Bank",
+        "Amount": "120.00",
+        "DocNum": "BNDRY-202502"
+      },
+      {
+        "TxnId": "txn-2025-03-01-core",
+        "TxnDate": "2025-03-01",
+        "Description": "Core month transaction",
+        "AccountName": "Service Income",
+        "AccountType": "Income",
+        "Amount": "450.00",
+        "DocNum": "CORE-202503"
+      },
+      {
+        "TxnId": "txn-2025-03-31-boundary",
+        "TxnDate": "2025-03-31",
+        "Description": "Boundary overlap with next month",
+        "AccountName": "Accounts Receivable",
+        "AccountType": "AccountsReceivable",
+        "Amount": "310.00",
+        "DocNum": "BNDRY-202503"
+      },
+      {
+        "TxnId": "txn-2025-03-31-boundary",
+        "TxnDate": "2025-04-01",
+        "Description": "Duplicate id appears in next month payload",
+        "AccountName": "Accounts Receivable",
+        "AccountType": "AccountsReceivable",
+        "Amount": "310.00",
+        "DocNum": "BNDRY-202504"
+      }
+    ]
+  }
+}
