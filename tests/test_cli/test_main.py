@@ -240,6 +240,39 @@ def test_auth_qbo_status_reports_missing_token(monkeypatch) -> None:
     assert "not authenticated" in result.output
 
 
+def test_auth_qbo_status_reports_active_and_expired(monkeypatch) -> None:
+    tokens = [
+        OAuthToken(
+            access_token="active",
+            refresh_token="refresh",
+            expires_at=datetime.now(UTC) + timedelta(minutes=30),
+        ),
+        OAuthToken(
+            access_token="expired",
+            refresh_token="refresh",
+            expires_at=datetime.now(UTC) - timedelta(minutes=30),
+        ),
+    ]
+
+    class _StoreWithSequence:
+        def __init__(self, provider_name: str) -> None:
+            assert provider_name == "qbo"
+
+        def load_token(self) -> OAuthToken:
+            return tokens.pop(0)
+
+    monkeypatch.setitem(build_run_context.__globals__, "OAuthTokenStore", _StoreWithSequence)
+    runner = CliRunner()
+
+    active_result = runner.invoke(cli, ["auth", "qbo", "status"])
+    expired_result = runner.invoke(cli, ["auth", "qbo", "status"])
+
+    assert active_result.exit_code == 0
+    assert "authenticated (active)" in active_result.output
+    assert expired_result.exit_code == 0
+    assert "authenticated (expired)" in expired_result.output
+
+
 def test_auth_qbo_logout_clears_token(monkeypatch) -> None:
     cleared = {"called": False}
 
@@ -258,6 +291,24 @@ def test_auth_qbo_logout_clears_token(monkeypatch) -> None:
     assert result.exit_code == 0
     assert "token cleared" in result.output.lower()
     assert cleared["called"] is True
+
+
+def test_auth_qbo_login_requires_code_verifier_with_code(monkeypatch) -> None:
+    class _FakeQboClient:
+        def authorization_url(self, *, state: str) -> tuple[str, str]:
+            return "https://example.test/oauth", "verifier-abc"
+
+    monkeypatch.setitem(
+        build_run_context.__globals__,
+        "_build_qbo_client",
+        lambda realm_id=None: _FakeQboClient(),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["auth", "qbo", "login", "--code", "abc123"])
+
+    assert result.exit_code != 0
+    assert "--code-verifier is required" in result.output
 
 
 def test_auth_gusto_login_prints_authorization_url_and_verifier(monkeypatch) -> None:
@@ -297,6 +348,40 @@ def test_auth_gusto_status_reports_not_configured(monkeypatch) -> None:
     assert "not configured" in result.output
 
 
+def test_auth_gusto_status_reports_active_and_expired(monkeypatch) -> None:
+    tokens = [
+        OAuthToken(
+            access_token="active",
+            refresh_token="refresh",
+            expires_at=datetime.now(UTC) + timedelta(minutes=30),
+        ),
+        OAuthToken(
+            access_token="expired",
+            refresh_token="refresh",
+            expires_at=datetime.now(UTC) - timedelta(minutes=30),
+        ),
+    ]
+
+    class _StoreWithSequence:
+        def __init__(self, provider_name: str) -> None:
+            assert provider_name == "gusto"
+
+        def load_token(self) -> OAuthToken:
+            return tokens.pop(0)
+
+    monkeypatch.setitem(build_run_context.__globals__, "OAuthTokenStore", _StoreWithSequence)
+    monkeypatch.setitem(build_run_context.__globals__, "_detect_gusto_availability", lambda: False)
+    runner = CliRunner()
+
+    active_result = runner.invoke(cli, ["auth", "gusto", "status"])
+    expired_result = runner.invoke(cli, ["auth", "gusto", "status"])
+
+    assert active_result.exit_code == 0
+    assert "authenticated (active)" in active_result.output
+    assert expired_result.exit_code == 0
+    assert "authenticated (expired)" in expired_result.output
+
+
 def test_auth_gusto_logout_clears_token(monkeypatch) -> None:
     cleared = {"called": False}
 
@@ -315,3 +400,21 @@ def test_auth_gusto_logout_clears_token(monkeypatch) -> None:
     assert result.exit_code == 0
     assert "token cleared" in result.output.lower()
     assert cleared["called"] is True
+
+
+def test_auth_gusto_login_requires_code_verifier_with_code(monkeypatch) -> None:
+    class _FakeGustoClient:
+        def authorization_url(self, *, state: str) -> tuple[str, str]:
+            return "https://example.test/gusto/oauth", "gusto-verifier"
+
+    monkeypatch.setitem(
+        build_run_context.__globals__,
+        "_build_gusto_client",
+        lambda: _FakeGustoClient(),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["auth", "gusto", "login", "--code", "abc123"])
+
+    assert result.exit_code != 0
+    assert "--code-verifier is required" in result.output
