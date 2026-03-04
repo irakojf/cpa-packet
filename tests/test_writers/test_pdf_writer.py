@@ -4,7 +4,13 @@ from pathlib import Path
 
 import pytest
 
-from cpapacket.writers.pdf_writer import PdfWriter, PdfWriterConfig
+from cpapacket.writers.pdf_writer import (
+    PdfBodyLine,
+    PdfWriter,
+    PdfWriterConfig,
+    _normalize_body_line,
+    _truncate_with_ellipsis,
+)
 
 
 def _ensure_reportlab_installed() -> None:
@@ -67,3 +73,21 @@ def test_pdf_writer_uses_fallback_labels_for_blank_header_fields(tmp_path: Path)
 
     assert destination.exists()
     assert destination.stat().st_size > 0
+
+
+def test_truncate_with_ellipsis_for_long_account_names() -> None:
+    short = _truncate_with_ellipsis("Cash", max_chars=60)
+    long = _truncate_with_ellipsis("A" * 100, max_chars=60)
+
+    assert short == "Cash"
+    assert len(long) == 60
+    assert long.endswith("...")
+
+
+def test_normalize_body_line_supports_plain_and_structured_lines() -> None:
+    normalized_plain = _normalize_body_line("Revenue")
+    structured = PdfBodyLine(text="Total Income", level=1, row_type="total")
+    normalized_structured = _normalize_body_line(structured)
+
+    assert normalized_plain == PdfBodyLine(text="Revenue")
+    assert normalized_structured == structured
