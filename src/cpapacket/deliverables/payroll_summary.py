@@ -5,9 +5,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
-from typing import Any
+from typing import Any, TypedDict
 
-from cpapacket.models.payroll import EmployeePayrollBreakdown, PayrollRun
+from cpapacket.models.payroll import CompanyPayrollSummary, EmployeePayrollBreakdown, PayrollRun
 
 _ZERO = Decimal("0.00")
 _CENT = Decimal("0.01")
@@ -24,6 +24,21 @@ def normalize_gusto_payload(
         normalize_payroll_runs(raw_runs),
         normalize_employee_breakdowns(raw_runs),
     )
+
+
+def build_company_summary(
+    *,
+    year: int,
+    payroll_runs: list[PayrollRun],
+) -> tuple[CompanyPayrollSummary, Decimal]:
+    """Build company summary + payroll cost (excluding employee withholdings)."""
+    summary = CompanyPayrollSummary.from_runs(year=year, runs=payroll_runs)
+    payroll_cost_total = (
+        summary.wages_total
+        + summary.employer_taxes_total
+        + summary.employer_retirement_contribution_total
+    ).quantize(_CENT, rounding=ROUND_HALF_UP)
+    return summary, payroll_cost_total
 
 
 def normalize_payroll_runs(raw_runs: list[Any]) -> list[PayrollRun]:
@@ -190,3 +205,62 @@ def _parse_date(value: Any) -> date | None:
         return date.fromisoformat(text)
     except ValueError:
         return None
+
+
+class _EmployeeTotals(TypedDict):
+    employee_name: str
+    wages: Decimal
+    employee_taxes: Decimal
+    employer_taxes: Decimal
+    employee_retirement_deferral: Decimal
+    employer_retirement_contribution: Decimal
+
+
+def aggregate_employee_breakdowns(
+    breakdowns: list[EmployeePayrollBreakdown],
+) -> list[tuple[str, str, Decimal, Decimal, Decimal, Decimal, Decimal]]:
+    """Aggregate per-employee various totals across payroll runs."""
+    totals: dict[str, _EmployeeTotals] = {}
+    for breakdown in breakdowns:
+        employee = totals.setdefault(
+            breakdown.employee_id,
+            {
+                "employee_name": breakdown.employee_name,
+                "wages": _ZERO,
+                "employee_taxes": _ZERO,
+                "employer_taxes": _ZERO,
+                "employee_retirement_deferral": _ZERO,
+                "employer_retirement_contribution": _ZERO,
+            },
+        )
+        employee["wages"] += breakdown.wages
+        employee["employee_taxes"] += breakdown.employee_taxes
+        employee["employer_taxes"] += breakdown.employer_taxes
+        employee["employee_retirement_deferral"] += breakdown.employee_retirement_deferral
+        employee["employer_retirement_contribution"] += breakdown.employer_retirement_contribution
+
+    return [
+        (
+            employee_id,
+            data["employee_name"],
+            data["wages"],
+            data["employee_taxes"],
+            data["employer_taxes"],
+            data["employee_retirement_deferral"],
+            data["employer_retirement_contribution"],
+        )
+        for employee_id, data in sorted(totals.items())
+    ]
+
+
+def total_401k_contributions(
+    runs: list[PayrollRun],
+) -> tuple[Decimal, Decimal]:
+    """Return sums of employee deferrals and employer contributions across runs."""
+    employee_total = sum(
+        (run.employee_retirement_deferral for run in runs), Decimal("0.00")
+    )
+    employer_total = sum(
+        (run.employer_retirement_contribution for run in runs), Decimal("0.00")
+    )
+    return employee_total, employer_total

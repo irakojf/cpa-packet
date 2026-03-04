@@ -5,9 +5,12 @@ from decimal import Decimal
 from pathlib import Path
 
 from cpapacket.deliverables.payroll_summary import (
+    aggregate_employee_breakdowns,
+    build_company_summary,
     normalize_employee_breakdowns,
     normalize_gusto_payload,
     normalize_payroll_runs,
+    total_401k_contributions,
 )
 
 
@@ -122,3 +125,45 @@ def test_normalize_gusto_payload_handles_missing_payrolls_key() -> None:
     runs, rows = normalize_gusto_payload({})
     assert runs == []
     assert rows == []
+
+
+def test_aggregate_employee_breakdowns_tracks_totals_across_runs() -> None:
+    payload = _load_fixture()
+    _, rows = normalize_gusto_payload(payload)
+
+    aggregated = aggregate_employee_breakdowns(rows)
+    by_employee = {entry[0]: entry for entry in aggregated}
+
+    assert "emp-001" in by_employee
+    _, name, wages, employee_taxes, employer_taxes, ee_ret, er_ret = by_employee["emp-001"]
+    assert name == "Alex Rivera"
+    assert wages == Decimal("12950.00")
+    assert employee_taxes == Decimal("2027.34")
+    assert employer_taxes == Decimal("1264.56")
+    assert ee_ret == Decimal("610.00")
+    assert er_ret == Decimal("366.00")
+
+
+def test_total_401k_contributions_sums_company_retirement_totals() -> None:
+    payload = _load_fixture()
+    runs, _ = normalize_gusto_payload(payload)
+
+    employee_total, employer_total = total_401k_contributions(runs)
+    assert employee_total == Decimal("1785.00")
+    assert employer_total == Decimal("1071.00")
+
+
+def test_build_company_summary_excludes_employee_withholdings_from_payroll_cost() -> None:
+    payload = _load_fixture()
+    payrolls = payload["payrolls"]
+    assert isinstance(payrolls, list)
+    runs = normalize_payroll_runs(payrolls)
+
+    summary, payroll_cost_total = build_company_summary(year=2025, payroll_runs=runs)
+
+    assert summary.wages_total == Decimal("37700.00")
+    assert summary.employee_taxes_total == Decimal("5940.00")
+    assert summary.employer_taxes_total == Decimal("3705.00")
+    assert summary.employee_retirement_deferral_total == Decimal("1785.00")
+    assert summary.employer_retirement_contribution_total == Decimal("1071.00")
+    assert payroll_cost_total == Decimal("42476.00")
