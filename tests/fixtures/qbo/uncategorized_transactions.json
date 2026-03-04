@@ -122,6 +122,22 @@
           "Rows": {
             "Row": []
           }
+        },
+        {
+          "type": "Section",
+          "Header": {
+            "ColData": [
+              {
+                "value": "Suspense"
+              },
+              {
+                "value": "5.00"
+              }
+            ]
+          },
+          "Rows": {
+            "Row": []
+          }
         }
       ]
     }

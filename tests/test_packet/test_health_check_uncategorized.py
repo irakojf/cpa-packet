@@ -283,4 +283,4 @@ def test_health_check_fixture_contains_expected_warning_signals() -> None:
     suspense = check_suspense_accounts_balance(context)
     assert suspense is not None
     assert suspense.code == "suspense_balance"
-    assert suspense.metadata["balance"] == "100.00"
+    assert suspense.metadata["balance"] == "105.00"
