@@ -18,18 +18,22 @@ def test_limiter_rejects_invalid_limits() -> None:
 
 def test_limiter_rejects_unknown_service() -> None:
     limiter = ServiceLimiter(config=LimiterConfig(qbo_max=1, gusto_max=1))
-    with pytest.raises(ValueError, match="unsupported service"):
-        with limiter.acquire("stripe"):  # type: ignore[arg-type]
-            pass
+    with (
+        pytest.raises(ValueError, match="unsupported service"),
+        limiter.acquire("stripe"),  # type: ignore[arg-type]
+    ):
+        pass
 
 
 def test_limiter_timeout_when_capacity_exhausted() -> None:
     limiter = ServiceLimiter(config=LimiterConfig(qbo_max=1, gusto_max=1))
 
-    with limiter.acquire("qbo"):
-        with pytest.raises(TimeoutError, match="timed out"):
-            with limiter.acquire("qbo", timeout=0.01):
-                pass
+    with (
+        limiter.acquire("qbo"),
+        pytest.raises(TimeoutError, match="timed out"),
+        limiter.acquire("qbo", timeout=0.01),
+    ):
+        pass
 
 
 def test_limiter_enforces_qbo_concurrency_bound() -> None:
@@ -55,3 +59,27 @@ def test_limiter_enforces_qbo_concurrency_bound() -> None:
             future.result()
 
     assert peak <= 2
+
+
+def test_limiter_enforces_service_specific_limits() -> None:
+    limiter = ServiceLimiter(config=LimiterConfig(qbo_max=3, gusto_max=1))
+
+    with limiter.acquire("gusto"), pytest.raises(TimeoutError, match="timed out"), limiter.acquire(
+        "gusto", timeout=0.01
+    ):
+        pass
+
+    # QBO should still allow up to its own configured bound independently.
+    with limiter.acquire("qbo"), limiter.acquire("qbo"), limiter.acquire("qbo"):
+        assert True
+
+
+def test_limiter_releases_slot_when_exception_occurs() -> None:
+    limiter = ServiceLimiter(config=LimiterConfig(qbo_max=1, gusto_max=1))
+
+    with pytest.raises(RuntimeError, match="boom"), limiter.acquire("qbo"):
+        raise RuntimeError("boom")
+
+    # If the slot was not released in __exit__, this acquire would time out.
+    with limiter.acquire("qbo", timeout=0.05):
+        assert True

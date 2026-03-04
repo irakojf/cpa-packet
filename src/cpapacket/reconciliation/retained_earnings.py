@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 
 from cpapacket.core.filesystem import atomic_write, ensure_directory
@@ -20,6 +21,28 @@ class ReMiscodingIntegrationResult:
     candidates: list[MiscodedDistributionCandidate]
     csv_path: Path
     wrote_csv: bool
+
+
+def evaluate_re_structural_flags(
+    *,
+    net_income: Decimal,
+    distributions: Decimal,
+    actual_ending_re: Decimal,
+    gl_rows: list[GeneralLedgerRow],
+) -> list[str]:
+    """Return non-blocking retained-earnings structural warning flags."""
+    flags: list[str] = []
+
+    if distributions > net_income:
+        flags.append("basis_risk_distributions_exceed_net_income")
+
+    if actual_ending_re < Decimal("0"):
+        flags.append("negative_ending_retained_earnings")
+
+    if _has_direct_retained_earnings_posting(gl_rows):
+        flags.append("direct_retained_earnings_postings_detected")
+
+    return flags
 
 
 def integrate_miscoded_distributions(
@@ -79,3 +102,11 @@ def _write_likely_miscoded_csv(
                     "|".join(candidate.reason_codes),
                 ]
             )
+
+
+def _has_direct_retained_earnings_posting(gl_rows: list[GeneralLedgerRow]) -> bool:
+    for row in gl_rows:
+        account_name = row.account_name.lower()
+        if "retained earnings" in account_name:
+            return True
+    return False

@@ -6,7 +6,10 @@ from pathlib import Path
 
 from cpapacket.models.distributions import MiscodedDistributionCandidate
 from cpapacket.models.general_ledger import GeneralLedgerRow
-from cpapacket.reconciliation.retained_earnings import integrate_miscoded_distributions
+from cpapacket.reconciliation.retained_earnings import (
+    evaluate_re_structural_flags,
+    integrate_miscoded_distributions,
+)
 
 
 class StubDetector:
@@ -93,3 +96,42 @@ def test_integrate_miscoded_distributions_reuses_existing_csv(tmp_path: Path) ->
     assert second.wrote_csv is False
     assert second.csv_path == first.csv_path
     assert second.csv_path.read_text(encoding="utf-8") == first_contents
+
+
+def test_evaluate_re_structural_flags_all_conditions() -> None:
+    gl_rows = [
+        GeneralLedgerRow(
+            txn_id="GL-RE",
+            date=date(2025, 2, 1),
+            transaction_type="Journal",
+            document_number="DOC-RE",
+            account_name="Retained Earnings",
+            account_type="Equity",
+            payee=None,
+            memo="Year-end adjustment",
+            debit=Decimal("0"),
+            credit=Decimal("10"),
+        )
+    ]
+
+    flags = evaluate_re_structural_flags(
+        net_income=Decimal("100"),
+        distributions=Decimal("150"),
+        actual_ending_re=Decimal("-1"),
+        gl_rows=gl_rows,
+    )
+
+    assert "basis_risk_distributions_exceed_net_income" in flags
+    assert "negative_ending_retained_earnings" in flags
+    assert "direct_retained_earnings_postings_detected" in flags
+
+
+def test_evaluate_re_structural_flags_clean_case() -> None:
+    flags = evaluate_re_structural_flags(
+        net_income=Decimal("150"),
+        distributions=Decimal("100"),
+        actual_ending_re=Decimal("200"),
+        gl_rows=[_gl_row()],
+    )
+
+    assert flags == []
