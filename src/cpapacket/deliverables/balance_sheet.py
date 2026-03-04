@@ -157,6 +157,7 @@ class BalanceSheetDeliverable:
             rows,
             company_name=_extract_company_name(company_payload),
             date_range_label=f"As of {as_of}",
+            equation=equation,
         )
         if json_path is not None:
             payload_to_write = _redact_payload(report_payload) if ctx.redact else report_payload
@@ -423,6 +424,7 @@ def _write_pdf(
     *,
     company_name: str,
     date_range_label: str,
+    equation: BalanceEquationCheck,
 ) -> None:
     writer = PdfWriter()
     body_lines = [
@@ -433,6 +435,18 @@ def _write_pdf(
         )
         for row in rows
     ]
+    body_lines.extend(
+        [
+            PdfBodyLine(text="Balance Equation Summary", level=0, row_type="header"),
+            PdfBodyLine(text=f"Assets  {equation.assets:.2f}", level=1, row_type="account"),
+            PdfBodyLine(
+                text=f"Liabilities + Equity  {(equation.liabilities + equation.equity):.2f}",
+                level=1,
+                row_type="account",
+            ),
+            PdfBodyLine(text=f"Difference  {equation.difference:.2f}", level=1, row_type="total"),
+        ]
+    )
     writer.write_report(
         path,
         company_name=company_name,

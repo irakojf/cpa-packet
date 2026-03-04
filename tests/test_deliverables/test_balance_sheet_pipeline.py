@@ -59,6 +59,7 @@ def test_balance_sheet_pipeline_generates_outputs_and_metadata(
     fixture = json.loads(Path("tests/fixtures/qbo/balance_sheet_2025.json").read_text("utf-8"))
     cache_dir = tmp_path / "_meta" / "private" / "cache"
     store = SessionDataStore(cache_dir=cache_dir)
+    captured_body_lines: list[Any] = []
 
     def fake_write_report(
         self: object,
@@ -69,6 +70,7 @@ def test_balance_sheet_pipeline_generates_outputs_and_metadata(
         date_range_label: str,
         body_lines: list[Any],
     ) -> Path:
+        captured_body_lines.extend(body_lines)
         destination = Path(output_path)
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(b"%PDF-1.4\n")
@@ -113,6 +115,12 @@ def test_balance_sheet_pipeline_generates_outputs_and_metadata(
         first_row = next(reader, None)
     assert first_row is not None
     assert first_row["section"] == "Assets"
+    assert captured_body_lines
+    line_text = [line.text for line in captured_body_lines]
+    assert "Balance Equation Summary" in line_text
+    assert any(text.startswith("Assets  ") for text in line_text)
+    assert any(text.startswith("Liabilities + Equity  ") for text in line_text)
+    assert any(text.startswith("Difference  ") for text in line_text)
 
     metadata = json.loads(meta_path.read_text(encoding="utf-8"))
     assert metadata["deliverable"] == "balance_sheet"
