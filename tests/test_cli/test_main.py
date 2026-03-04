@@ -258,3 +258,60 @@ def test_auth_qbo_logout_clears_token(monkeypatch) -> None:
     assert result.exit_code == 0
     assert "token cleared" in result.output.lower()
     assert cleared["called"] is True
+
+
+def test_auth_gusto_login_prints_authorization_url_and_verifier(monkeypatch) -> None:
+    class _FakeGustoClient:
+        def authorization_url(self, *, state: str) -> tuple[str, str]:
+            assert state == "state-456"
+            return "https://example.test/gusto/oauth", "gusto-verifier"
+
+    monkeypatch.setitem(
+        build_run_context.__globals__,
+        "_build_gusto_client",
+        lambda: _FakeGustoClient(),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["auth", "gusto", "login", "--state", "state-456"])
+
+    assert result.exit_code == 0
+    assert "https://example.test/gusto/oauth" in result.output
+    assert "gusto-verifier" in result.output
+
+
+def test_auth_gusto_status_reports_not_configured(monkeypatch) -> None:
+    class _StoreWithoutToken:
+        def __init__(self, provider_name: str) -> None:
+            assert provider_name == "gusto"
+
+        def load_token(self) -> None:
+            return None
+
+    monkeypatch.setitem(build_run_context.__globals__, "OAuthTokenStore", _StoreWithoutToken)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["auth", "gusto", "status"])
+
+    assert result.exit_code == 0
+    assert "not configured" in result.output
+
+
+def test_auth_gusto_logout_clears_token(monkeypatch) -> None:
+    cleared = {"called": False}
+
+    class _Store:
+        def __init__(self, provider_name: str) -> None:
+            assert provider_name == "gusto"
+
+        def clear_token(self) -> None:
+            cleared["called"] = True
+
+    monkeypatch.setitem(build_run_context.__globals__, "OAuthTokenStore", _Store)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["auth", "gusto", "logout"])
+
+    assert result.exit_code == 0
+    assert "token cleared" in result.output.lower()
+    assert cleared["called"] is True

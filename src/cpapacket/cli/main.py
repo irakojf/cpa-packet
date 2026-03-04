@@ -11,6 +11,7 @@ from typing import Any, Literal, cast
 import click
 
 from cpapacket.clients.auth import OAuthTokenStore
+from cpapacket.clients.gusto import GustoOAuthClient, GustoOAuthConfig
 from cpapacket.clients.qbo import QboOAuthClient, QboOAuthConfig
 from cpapacket.core.context import RunContext, resolve_year_and_source
 
@@ -54,6 +55,16 @@ def _build_qbo_client(*, realm_id: str | None = None) -> QboOAuthClient:
             client_secret=_required_env("CPAPACKET_QBO_CLIENT_SECRET"),
             redirect_uri=_required_env("CPAPACKET_QBO_REDIRECT_URI"),
             realm_id=realm_id or os.getenv("CPAPACKET_QBO_REALM_ID"),
+        )
+    )
+
+
+def _build_gusto_client() -> GustoOAuthClient:
+    return GustoOAuthClient(
+        GustoOAuthConfig(
+            client_id=_required_env("CPAPACKET_GUSTO_CLIENT_ID"),
+            client_secret=_required_env("CPAPACKET_GUSTO_CLIENT_SECRET"),
+            redirect_uri=_required_env("CPAPACKET_GUSTO_REDIRECT_URI"),
         )
     )
 
@@ -250,6 +261,56 @@ def auth_qbo_logout() -> None:
     """Clear stored QBO token."""
     OAuthTokenStore("qbo").clear_token()
     click.echo("QBO token cleared.")
+
+
+@auth_group.group("gusto")
+def auth_gusto_group() -> None:
+    """Gusto OAuth commands."""
+
+
+@auth_gusto_group.command("login")
+@click.option("--state", type=str, default=None, help="OAuth state override.")
+@click.option("--code", type=str, default=None, help="Authorization code from OAuth callback.")
+@click.option("--code-verifier", type=str, default=None, help="PKCE code verifier.")
+def auth_gusto_login(
+    state: str | None,
+    code: str | None,
+    code_verifier: str | None,
+) -> None:
+    """Start Gusto login or exchange an auth code for a token."""
+    client = _build_gusto_client()
+    if code:
+        if not code_verifier:
+            raise click.ClickException("--code-verifier is required when --code is provided.")
+        token = client.exchange_code_for_token(code=code, code_verifier=code_verifier)
+        click.echo(f"Gusto token saved. Expires at {token.expires_at.isoformat()}.")
+        return
+
+    oauth_state = state or secrets.token_urlsafe(16)
+    auth_url, verifier = client.authorization_url(state=oauth_state)
+    click.echo(f"Open this URL in your browser:\n{auth_url}")
+    click.echo(f"Use this code verifier for token exchange:\n{verifier}")
+    click.echo("After callback, run:")
+    click.echo("cpapacket auth gusto login --code <AUTH_CODE> --code-verifier <VERIFIER>")
+
+
+@auth_gusto_group.command("status")
+def auth_gusto_status() -> None:
+    """Show whether a Gusto token is currently stored."""
+    token = OAuthTokenStore("gusto").load_token()
+    if token is None:
+        click.echo("Gusto status: not configured")
+        return
+    state = "expired" if token.is_expired() else "active"
+    click.echo(f"Gusto status: authenticated ({state})")
+    click.echo(f"Token expiry: {token.expires_at.isoformat()}")
+
+
+@auth_gusto_group.command("logout")
+def auth_gusto_logout() -> None:
+    """Clear stored Gusto token."""
+    OAuthTokenStore("gusto").clear_token()
+    click.echo("Gusto token cleared.")
 
 
 def main(argv: list[str] | None = None) -> Any:
