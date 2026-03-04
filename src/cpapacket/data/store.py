@@ -71,11 +71,12 @@ class SessionDataStore:
                 self._cache.setdefault(cache_key, loaded)
                 return self._cache[cache_key]
 
-    def set(self, cache_key: str, payload: object) -> None:
+    def set(self, cache_key: str, payload: object, *, persist_disk: bool = True) -> None:
         """Insert or overwrite payload for key."""
         with self._lock:
             self._cache[cache_key] = payload
-        self._persist_to_disk(cache_key, payload)
+        if persist_disk:
+            self._persist_to_disk(cache_key, payload)
 
     def clear(self) -> None:
         """Clear memory cache and any stale in-flight entries."""
@@ -84,20 +85,29 @@ class SessionDataStore:
             self._inflight.clear()
             self._key_locks.clear()
 
-    def get_or_fetch(self, cache_key: str, fetcher: Callable[[], T]) -> tuple[T, str]:
+    def get_or_fetch(
+        self,
+        cache_key: str,
+        fetcher: Callable[[], T],
+        *,
+        force: bool = False,
+        no_cache: bool = False,
+    ) -> tuple[T, str]:
         """Get cached payload, otherwise fetch exactly once per key across threads.
 
         Returns tuple `(payload, source)` where `source` is `"cache"` or `"api"`.
         """
-        cached = self.get(cache_key)
-        if cached is not None:
-            return cast(T, cached), "cache"
+        if not force:
+            cached = self.get(cache_key)
+            if cached is not None:
+                return cast(T, cached), "cache"
 
         key_lock = self._lock_for_key(cache_key)
         with key_lock, self._lock:
-            cached = self._cache.get(cache_key)
-            if cached is not None:
-                return cast(T, cached), "cache"
+            if not force:
+                cached = self._cache.get(cache_key)
+                if cached is not None:
+                    return cast(T, cached), "cache"
             inflight = self._inflight.get(cache_key)
             if inflight is None:
                 inflight = _InFlight[object]()
@@ -120,7 +130,7 @@ class SessionDataStore:
                 inflight.value = payload
                 self._inflight.pop(cache_key, None)
                 inflight.event.set()
-            self.set(cache_key, payload)
+            self.set(cache_key, payload, persist_disk=not no_cache)
             return payload, "api"
 
         inflight.event.wait()

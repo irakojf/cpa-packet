@@ -206,3 +206,52 @@ def test_integrity_mismatch_quarantines_and_refetches(tmp_path: Path) -> None:
     assert quarantine_dir.exists()
     quarantine_files = list(quarantine_dir.glob("bad-key__*.quarantine.json"))
     assert quarantine_files, "expected quarantine marker file"
+
+
+def test_get_or_fetch_force_bypasses_memory_and_disk_cache(tmp_path: Path) -> None:
+    cache_dir = tmp_path / "_meta" / "private" / "cache"
+    seeded = SessionDataStore(cache_dir=cache_dir)
+    seeded.set("force-key", {"value": "stale"})
+
+    store = SessionDataStore(cache_dir=cache_dir)
+    calls = 0
+
+    def fetcher() -> dict[str, str]:
+        nonlocal calls
+        calls += 1
+        return {"value": "fresh"}
+
+    value, source = store.get_or_fetch("force-key", fetcher, force=True)
+    assert value == {"value": "fresh"}
+    assert source == "api"
+    assert calls == 1
+
+    cached_value, cached_source = store.get_or_fetch("force-key", fetcher)
+    assert cached_value == {"value": "fresh"}
+    assert cached_source == "cache"
+    assert calls == 1
+
+
+def test_get_or_fetch_no_cache_uses_memory_without_disk_writes(tmp_path: Path) -> None:
+    cache_dir = tmp_path / "_meta" / "private" / "cache"
+    store = SessionDataStore(cache_dir=cache_dir)
+    calls = 0
+
+    def fetcher() -> dict[str, int]:
+        nonlocal calls
+        calls += 1
+        return {"value": 123}
+
+    value, source = store.get_or_fetch("no-cache-key", fetcher, no_cache=True)
+    assert value == {"value": 123}
+    assert source == "api"
+    assert calls == 1
+
+    assert store.get("no-cache-key") == {"value": 123}
+    assert not (cache_dir / "no-cache-key.json.gz").exists()
+    assert not (cache_dir / "no-cache-key.meta.json").exists()
+
+    cached_value, cached_source = store.get_or_fetch("no-cache-key", fetcher, no_cache=True)
+    assert cached_value == {"value": 123}
+    assert cached_source == "cache"
+    assert calls == 1
