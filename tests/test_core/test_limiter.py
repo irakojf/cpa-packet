@@ -76,6 +76,40 @@ def test_limiter_enforces_service_specific_limits() -> None:
         assert True
 
 
+def test_limiter_blocks_new_acquires_while_max_concurrent_slots_are_held() -> None:
+    limiter = ServiceLimiter(config=LimiterConfig(qbo_max=2, gusto_max=1))
+
+    all_slots_held = threading.Event()
+    release_slots = threading.Event()
+    active = 0
+    lock = threading.Lock()
+
+    def holding_worker() -> None:
+        nonlocal active
+        with limiter.acquire("qbo", timeout=0.2):
+            with lock:
+                active += 1
+                if active == 2:
+                    all_slots_held.set()
+            release_slots.wait(timeout=1.0)
+            with lock:
+                active -= 1
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        holder_one = pool.submit(holding_worker)
+        holder_two = pool.submit(holding_worker)
+
+        assert all_slots_held.wait(timeout=1.0)
+        with pytest.raises(TimeoutError, match="timed out"), limiter.acquire(
+            "qbo", timeout=0.01
+        ):
+            pass
+
+        release_slots.set()
+        holder_one.result()
+        holder_two.result()
+
+
 def test_limiter_releases_slot_when_exception_occurs() -> None:
     limiter = ServiceLimiter(config=LimiterConfig(qbo_max=1, gusto_max=1))
 
