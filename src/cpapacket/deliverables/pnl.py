@@ -238,6 +238,16 @@ class PnlDeliverable:
         rows = normalize_pnl_rows(report_payload)
         if not rows:
             warnings.append("P&L report normalized to zero rows.")
+            rows = [
+                NormalizedRow(
+                    section=_DEFAULT_SECTION,
+                    label="No transactions found",
+                    amount=Decimal("0"),
+                    row_type="total",
+                    level=0,
+                    path="No transactions found",
+                )
+            ]
 
         deliverable_dir = ctx.out_dir / self.folder
         deliverable_dir.mkdir(parents=True, exist_ok=True)
@@ -288,6 +298,7 @@ class PnlDeliverable:
             key=self.key,
             report_payload=report_payload,
             artifacts=[csv_path, pdf_path] + ([json_path] if json_path is not None else []),
+            warnings=warnings,
             context_inputs={
                 "year": ctx.year,
                 "method": normalized_method,
@@ -309,13 +320,10 @@ class PnlDeliverable:
 
 def _resolve_output_path(path: Path, *, on_conflict: str, non_interactive: bool) -> Path:
     normalized_conflict = None if on_conflict == "prompt" else on_conflict
-    return cast(
-        Path,
-        resolve_output_path(
-            path,
-            on_conflict=normalized_conflict,
-            non_interactive=non_interactive,
-        ),
+    return resolve_output_path(
+        path,
+        on_conflict=normalized_conflict,
+        non_interactive=non_interactive,
     )
 
 
@@ -395,6 +403,7 @@ def _write_metadata(
     key: str,
     report_payload: Mapping[str, Any],
     artifacts: list[Path],
+    warnings: list[str],
     context_inputs: Mapping[str, Any],
 ) -> None:
     metadata_inputs = {
@@ -408,6 +417,7 @@ def _write_metadata(
         "input_fingerprint": fingerprint,
         "schema_versions": SCHEMA_VERSIONS.get(key, {}),
         "artifacts": [str(item) for item in artifacts],
+        "warnings": warnings,
     }
     with atomic_write(path, mode="w", encoding="utf-8") as handle:
         text_handle = cast(IO[str], handle)
