@@ -1,6 +1,11 @@
 """Packet-level helpers."""
 
-from .doctor import DoctorCheckResult, run_python_environment_check, run_qbo_token_check
+from .doctor import (
+    DoctorCheckResult,
+    run_gusto_token_check,
+    run_python_environment_check,
+    run_qbo_token_check,
+)
 from .health_check import (
     DataHealthCheck,
     DataHealthCheckContext,
@@ -38,6 +43,7 @@ __all__ = [
     "prompt_message",
     "render_data_health_report",
     "run_data_health_precheck",
+    "run_gusto_token_check",
     "run_python_environment_check",
     "run_qbo_token_check",
     "should_continue_after_report",

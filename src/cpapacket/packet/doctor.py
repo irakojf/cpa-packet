@@ -132,3 +132,47 @@ def run_qbo_token_check(
         summary="QBO token check passed.",
         details=[*details, f"seconds_to_expiry={age_seconds}", "refresh_probe=ok"],
     )
+
+
+def run_gusto_token_check(
+    *,
+    load_token: QboTokenLoader,
+    refresh_probe: QboTokenRefreshProbe,
+    expiry_leeway_seconds: int = 60,
+) -> DoctorCheckResult:
+    """Validate optional Gusto token state without hard-failing when absent."""
+    token = load_token()
+    if token is None:
+        return DoctorCheckResult(
+            check_name="gusto_token",
+            status="pass",
+            summary="Gusto token not configured (optional).",
+            details=["configured=false"],
+            guidance="Run `cpapacket auth gusto login` to enable Gusto-backed checks.",
+        )
+
+    now = datetime.now(UTC)
+    details = [f"expires_at={token.expires_at.astimezone(UTC).isoformat()}"]
+    if token.is_expired(leeway_seconds=expiry_leeway_seconds):
+        details.append("expired=true")
+    else:
+        details.append("expired=false")
+
+    try:
+        refresh_probe(token.refresh_token)
+    except Exception as exc:
+        return DoctorCheckResult(
+            check_name="gusto_token",
+            status="fail",
+            summary="Gusto token refresh probe failed.",
+            details=[*details, f"refresh_error={exc}"],
+            guidance="Run `cpapacket auth gusto login` to refresh credentials and retry doctor.",
+        )
+
+    age_seconds = int((token.expires_at.astimezone(UTC) - now).total_seconds())
+    return DoctorCheckResult(
+        check_name="gusto_token",
+        status="pass",
+        summary="Gusto token check passed.",
+        details=[*details, f"seconds_to_expiry={age_seconds}", "refresh_probe=ok"],
+    )

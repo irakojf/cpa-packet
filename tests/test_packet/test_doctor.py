@@ -4,7 +4,11 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from cpapacket.clients.auth import OAuthToken
-from cpapacket.packet.doctor import run_python_environment_check, run_qbo_token_check
+from cpapacket.packet.doctor import (
+    run_gusto_token_check,
+    run_python_environment_check,
+    run_qbo_token_check,
+)
 
 
 def test_run_python_environment_check_passes_when_version_and_packages_present(
@@ -108,3 +112,46 @@ def test_run_qbo_token_check_fails_when_refresh_probe_errors() -> None:
     assert any(item == "expired=true" for item in result.details)
     assert any(item == "refresh_error=invalid_grant" for item in result.details)
     assert result.guidance == "Re-authenticate with `cpapacket auth qbo login` and retry doctor."
+
+
+def test_run_gusto_token_check_passes_when_not_configured() -> None:
+    token = _token_with_expiry(3600)
+    result = run_gusto_token_check(
+        load_token=lambda: None,
+        refresh_probe=lambda _refresh_token: token,
+    )
+
+    assert result.status == "pass"
+    assert result.summary == "Gusto token not configured (optional)."
+    assert "configured=false" in result.details
+
+
+def test_run_gusto_token_check_passes_when_refresh_probe_succeeds() -> None:
+    token = _token_with_expiry(3600)
+
+    def refresh_probe(refresh_token: str) -> OAuthToken:
+        assert refresh_token == "refresh"
+        return token
+
+    result = run_gusto_token_check(load_token=lambda: token, refresh_probe=refresh_probe)
+
+    assert result.status == "pass"
+    assert result.summary == "Gusto token check passed."
+    assert "refresh_probe=ok" in result.details
+
+
+def test_run_gusto_token_check_fails_when_refresh_probe_errors() -> None:
+    token = _token_with_expiry(3600)
+
+    def refresh_probe(_refresh_token: str) -> OAuthToken:
+        raise RuntimeError("token_expired")
+
+    result = run_gusto_token_check(load_token=lambda: token, refresh_probe=refresh_probe)
+
+    assert result.status == "fail"
+    assert result.summary == "Gusto token refresh probe failed."
+    assert any(item == "refresh_error=token_expired" for item in result.details)
+    assert (
+        result.guidance
+        == "Run `cpapacket auth gusto login` to refresh credentials and retry doctor."
+    )
