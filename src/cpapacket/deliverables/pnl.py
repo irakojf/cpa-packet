@@ -5,18 +5,21 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from tempfile import NamedTemporaryFile
-from time import gmtime, strftime
-from typing import Any
+from typing import IO, Any, Literal, Protocol, cast
 
+from cpapacket.core.context import RunContext
+from cpapacket.core.filesystem import atomic_write
+from cpapacket.deliverables.base import DeliverableResult
 from cpapacket.models.normalized import NormalizedRow
 from cpapacket.utils.constants import DELIVERABLE_FOLDERS, SCHEMA_VERSIONS
+from cpapacket.utils.prompts import resolve_output_path
 from cpapacket.writers.csv_writer import CsvWriter
+from cpapacket.writers.pdf_writer import PdfWriter
 
 _DEFAULT_SECTION = "Uncategorized"
+_RowType = Literal["header", "account", "subtotal", "total"]
 _REDACTED_VALUE = "[REDACTED]"
 _SENSITIVE_JSON_KEYS = {
     "access_token",
@@ -36,6 +39,16 @@ _SECTION_MAP = {
     "other expenses": "Other Expense",
     "other expense": "Other Expense",
 }
+
+
+class PnlDataProvider(Protocol):
+    """Minimal data-provider interface required by PnlDeliverable."""
+
+    def get_pnl(self, year: int, method: str) -> dict[str, Any]:
+        """Fetch Profit & Loss report payload."""
+
+    def get_company_info(self) -> dict[str, Any]:
+        """Fetch company profile payload."""
 
 
 def normalize_pnl_rows(report_payload: Mapping[str, Any]) -> list[NormalizedRow]:
@@ -187,22 +200,11 @@ def _resolve_section(candidate: str, *, fallback: str) -> str:
     return _SECTION_MAP.get(normalized, fallback)
 
 
-def _classify_summary(label: str) -> str:
+def _classify_summary(label: str) -> _RowType:
     lower = label.lower()
     if lower.startswith("net ") or lower.startswith("total "):
         return "total"
     return "subtotal"
-
-
-@dataclass(frozen=True, slots=True)
-class PnlDeliverableResult:
-    """Result payload returned by PnlDeliverable.generate."""
-
-    deliverable_key: str
-    success: bool
-    artifacts: list[str]
-    warnings: list[str]
-    error: str | None = None
 
 
 class PnlDeliverable:
@@ -217,54 +219,86 @@ class PnlDeliverable:
     def gather_prompts(self, _ctx: object) -> dict[str, Any]:
         return {}
 
+    def is_current(self, _ctx: object) -> bool:
+        # Incremental freshness checks are implemented in a follow-up bead.
+        return False
+
     def generate(
         self,
-        *,
-        report_payload: Mapping[str, Any],
-        output_root: Path,
-        year: int,
-        method: str = "accrual",
-        on_conflict: str = "abort",
-        no_raw: bool = False,
-        redact: bool = False,
-    ) -> PnlDeliverableResult:
+        ctx: RunContext,
+        store: PnlDataProvider,
+        prompts: dict[str, Any],
+    ) -> DeliverableResult:
+        del prompts
+
         warnings: list[str] = []
+        report_payload = store.get_pnl(ctx.year, ctx.method)
+        company_payload = store.get_company_info()
 
         rows = normalize_pnl_rows(report_payload)
         if not rows:
             warnings.append("P&L report normalized to zero rows.")
 
-        deliverable_dir = output_root / self.folder
+        deliverable_dir = ctx.out_dir / self.folder
         deliverable_dir.mkdir(parents=True, exist_ok=True)
-        meta_dir = output_root / "_meta"
+        meta_dir = ctx.out_dir / "_meta"
         meta_dir.mkdir(parents=True, exist_ok=True)
 
-        start_date = f"{year}-01-01"
-        end_date = f"{year}-12-31"
-        normalized_method = method.strip().lower() if method.strip() else "accrual"
+        start_date, end_date = _extract_report_date_range(report_payload, year=ctx.year)
+        normalized_method = ctx.method.strip().lower() if ctx.method.strip() else "accrual"
         csv_name = f"Profit_and_Loss_{start_date}_to_{end_date}_{normalized_method}"
-        base_name = f"Profit_and_Loss_{year}"
-        csv_path = _resolve_output_path(deliverable_dir / f"{csv_name}.csv", on_conflict)
-        pdf_path = _resolve_output_path(deliverable_dir / f"{base_name}.pdf", on_conflict)
-        json_path = (
-            None if no_raw
-            else _resolve_output_path(deliverable_dir / f"{base_name}_raw.json", on_conflict)
+        base_name = f"Profit_and_Loss_{start_date}_to_{end_date}_{normalized_method}"
+        csv_path = _resolve_output_path(
+            deliverable_dir / f"{csv_name}.csv",
+            on_conflict=ctx.on_conflict,
+            non_interactive=ctx.non_interactive,
         )
-        metadata_path = _resolve_output_path(meta_dir / f"{self.key}_metadata.json", on_conflict)
+        pdf_path = _resolve_output_path(
+            deliverable_dir / f"{base_name}.pdf",
+            on_conflict=ctx.on_conflict,
+            non_interactive=ctx.non_interactive,
+        )
+        json_path = (
+            None
+            if ctx.no_raw
+            else _resolve_output_path(
+                deliverable_dir / f"{base_name}_raw.json",
+                on_conflict=ctx.on_conflict,
+                non_interactive=ctx.non_interactive,
+            )
+        )
+        metadata_path = _resolve_output_path(
+            meta_dir / f"{self.key}_metadata.json",
+            on_conflict=ctx.on_conflict,
+            non_interactive=ctx.non_interactive,
+        )
 
         _write_csv(csv_path, rows)
-        _write_pdf(pdf_path, rows, year)
+        _write_pdf(
+            pdf_path,
+            rows,
+            company_name=_extract_company_name(company_payload),
+            date_range_label=f"{start_date} to {end_date} ({normalized_method} basis)",
+        )
         if json_path is not None:
-            payload_to_write = _redact_payload(report_payload) if redact else report_payload
+            payload_to_write = _redact_payload(report_payload) if ctx.redact else report_payload
             _write_json(json_path, payload_to_write)
         _write_metadata(
             path=metadata_path,
             key=self.key,
             report_payload=report_payload,
             artifacts=[csv_path, pdf_path] + ([json_path] if json_path is not None else []),
+            context_inputs={
+                "year": ctx.year,
+                "method": normalized_method,
+                "start_date": start_date,
+                "end_date": end_date,
+                "no_raw": ctx.no_raw,
+                "redact": ctx.redact,
+            },
         )
 
-        return PnlDeliverableResult(
+        return DeliverableResult(
             deliverable_key=self.key,
             success=True,
             artifacts=[str(csv_path), str(pdf_path)]
@@ -273,17 +307,16 @@ class PnlDeliverable:
         )
 
 
-def _resolve_output_path(path: Path, on_conflict: str) -> Path:
-    if not path.exists():
-        return path
-
-    normalized = on_conflict.strip().lower()
-    if normalized == "overwrite":
-        return path
-    if normalized == "copy":
-        suffix = strftime("%Y%m%d_%H%M%S", gmtime())
-        return path.with_name(f"{path.stem}__copy_{suffix}{path.suffix}")
-    raise FileExistsError(f"{path} already exists and on_conflict=abort")
+def _resolve_output_path(path: Path, *, on_conflict: str, non_interactive: bool) -> Path:
+    normalized_conflict = None if on_conflict == "prompt" else on_conflict
+    return cast(
+        Path,
+        resolve_output_path(
+            path,
+            on_conflict=normalized_conflict,
+            non_interactive=non_interactive,
+        ),
+    )
 
 
 def _write_csv(path: Path, rows: list[NormalizedRow]) -> None:
@@ -305,47 +338,35 @@ def _write_csv(path: Path, rows: list[NormalizedRow]) -> None:
     )
 
 
-def _write_pdf(path: Path, rows: list[NormalizedRow], year: int) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        from reportlab.lib.pagesizes import letter
-        from reportlab.pdfgen import canvas
-    except ImportError as exc:  # pragma: no cover - runtime dependency path
-        raise RuntimeError("reportlab is required to generate PDF output") from exc
-
-    with NamedTemporaryFile("wb", delete=False, dir=path.parent) as tmp_file:
-        tmp_name = tmp_file.name
-
-    pdf = canvas.Canvas(tmp_name, pagesize=letter)
-    width, height = letter
-    y = height - 48
-    pdf.setFont("Helvetica-Bold", 12)
-    pdf.drawString(40, y, f"Profit and Loss - {year}")
-    y -= 20
-    pdf.setFont("Helvetica", 9)
-    for row in rows:
-        if y < 48:
-            pdf.showPage()
-            y = height - 48
-            pdf.setFont("Helvetica", 9)
-        indent = " " * (row.level * 2)
-        line = f"{indent}{row.label} ({row.row_type}) .... {row.amount:.2f}"
-        pdf.drawString(40, y, line[:120])
-        y -= 12
-    pdf.save()
-    Path(tmp_name).replace(path)
+def _write_pdf(
+    path: Path,
+    rows: list[NormalizedRow],
+    *,
+    company_name: str,
+    date_range_label: str,
+) -> None:
+    writer = PdfWriter()
+    body_lines = [
+        f"{'  ' * row.level}{row.label} [{row.row_type}] {row.amount:.2f}" for row in rows
+    ]
+    writer.write_report(
+        path,
+        company_name=company_name,
+        report_title="Profit and Loss",
+        date_range_label=date_range_label,
+        body_lines=body_lines,
+    )
 
 
 def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with NamedTemporaryFile("w", delete=False, encoding="utf-8", dir=path.parent) as tmp_file:
-        json.dump(payload, tmp_file, indent=2, sort_keys=True)
-        tmp_name = tmp_file.name
-    Path(tmp_name).replace(path)
+    with atomic_write(path, mode="w", encoding="utf-8") as handle:
+        text_handle = cast(IO[str], handle)
+        json.dump(payload, text_handle, indent=2, sort_keys=True)
+        text_handle.write("\n")
 
 
 def _redact_payload(payload: Mapping[str, Any]) -> Mapping[str, Any]:
-    return _redact_value(payload)
+    return cast(Mapping[str, Any], _redact_value(payload))
 
 
 def _redact_value(value: Any) -> Any:
@@ -369,8 +390,13 @@ def _write_metadata(
     key: str,
     report_payload: Mapping[str, Any],
     artifacts: list[Path],
+    context_inputs: Mapping[str, Any],
 ) -> None:
-    canonical = json.dumps(report_payload, sort_keys=True, separators=(",", ":"))
+    metadata_inputs = {
+        **dict(context_inputs),
+        "report_payload": report_payload,
+    }
+    canonical = json.dumps(metadata_inputs, sort_keys=True, separators=(",", ":"))
     fingerprint = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     payload = {
         "deliverable": key,
@@ -378,8 +404,29 @@ def _write_metadata(
         "schema_versions": SCHEMA_VERSIONS.get(key, {}),
         "artifacts": [str(item) for item in artifacts],
     }
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with NamedTemporaryFile("w", delete=False, encoding="utf-8", dir=path.parent) as tmp_file:
-        json.dump(payload, tmp_file, indent=2, sort_keys=True)
-        tmp_name = tmp_file.name
-    Path(tmp_name).replace(path)
+    with atomic_write(path, mode="w", encoding="utf-8") as handle:
+        text_handle = cast(IO[str], handle)
+        json.dump(payload, text_handle, indent=2, sort_keys=True)
+        text_handle.write("\n")
+
+
+def _extract_report_date_range(report_payload: Mapping[str, Any], *, year: int) -> tuple[str, str]:
+    header = report_payload.get("Header")
+    if isinstance(header, Mapping):
+        start = header.get("StartPeriod")
+        end = header.get("EndPeriod")
+        if isinstance(start, str) and start.strip() and isinstance(end, str) and end.strip():
+            return start.strip(), end.strip()
+    return f"{year}-01-01", f"{year}-12-31"
+
+
+def _extract_company_name(company_payload: Mapping[str, Any]) -> str:
+    company_info = company_payload.get("CompanyInfo")
+    if isinstance(company_info, Mapping):
+        legal_name = company_info.get("LegalName")
+        if isinstance(legal_name, str) and legal_name.strip():
+            return legal_name.strip()
+        company_name = company_info.get("CompanyName")
+        if isinstance(company_name, str) and company_name.strip():
+            return company_name.strip()
+    return "Unknown Company"
