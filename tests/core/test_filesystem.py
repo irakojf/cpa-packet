@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from cpapacket.core.filesystem import atomic_write
+from cpapacket.core.filesystem import atomic_write, ensure_directory, sanitize_filesystem_name
 
 
 def test_atomic_write_text_success(tmp_path: Path) -> None:
@@ -61,3 +61,22 @@ def test_atomic_write_rejects_unsupported_modes(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="supports write/xb modes only"):
         with atomic_write(destination, mode="a"):
             pass
+
+
+def test_sanitize_filesystem_name_replaces_unsafe_chars_and_collapses_underscores() -> None:
+    raw = '  ACME / North-East: "Holdings"  <2025>?  '
+    sanitized = sanitize_filesystem_name(raw)
+    assert sanitized == "ACME_North-East_Holdings_2025"
+
+
+def test_sanitize_filesystem_name_defaults_for_blank_values() -> None:
+    assert sanitize_filesystem_name("   ") == "untitled"
+    assert sanitize_filesystem_name("////") == "untitled"
+
+
+def test_ensure_directory_creates_parents(tmp_path: Path) -> None:
+    target = tmp_path / "a" / "b" / "c"
+    resolved = ensure_directory(target)
+    assert resolved == target
+    assert target.exists()
+    assert target.is_dir()

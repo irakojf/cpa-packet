@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import IO
+
+_UNSAFE_FS_CHARS_PATTERN = re.compile(r"[\\/:*?\"<>|]+")
+_WHITESPACE_PATTERN = re.compile(r"\s+")
+_MULTI_UNDERSCORE_PATTERN = re.compile(r"_+")
 
 
 @contextmanager
@@ -53,3 +58,18 @@ def atomic_write(
                 os.unlink(tmp_name)
             except FileNotFoundError:
                 pass
+
+
+def sanitize_filesystem_name(value: str) -> str:
+    """Convert arbitrary text into a filesystem-safe directory name."""
+    normalized = _WHITESPACE_PATTERN.sub("_", value.strip())
+    normalized = _UNSAFE_FS_CHARS_PATTERN.sub("_", normalized)
+    normalized = _MULTI_UNDERSCORE_PATTERN.sub("_", normalized).strip("_")
+    return normalized or "untitled"
+
+
+def ensure_directory(path: str | Path) -> Path:
+    """Create directory and parents if missing, returning normalized Path."""
+    target = Path(path)
+    target.mkdir(parents=True, exist_ok=True)
+    return target
