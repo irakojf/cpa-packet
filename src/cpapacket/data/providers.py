@@ -62,12 +62,16 @@ class DataProviders:
             "end_date": f"{year}-12-31",
             "accounting_method": method,
         }
-        return self._cached_qbo_json(endpoint="/reports/ProfitAndLoss", params=params, schema="qbo.pnl.v1")
+        return self._cached_qbo_json(
+            endpoint="/reports/ProfitAndLoss", params=params, schema="qbo.pnl.v1"
+        )
 
     def get_balance_sheet(self, year: int, as_of: date | str) -> dict[str, Any]:
         as_of_date = as_of if isinstance(as_of, str) else as_of.isoformat()
         params = {"as_of_date": as_of_date}
-        return self._cached_qbo_json(endpoint="/reports/BalanceSheet", params=params, schema="qbo.balance_sheet.v1")
+        return self._cached_qbo_json(
+            endpoint="/reports/BalanceSheet", params=params, schema="qbo.balance_sheet.v1"
+        )
 
     def get_general_ledger(self, year: int, month: int) -> dict[str, Any]:
         start_date, end_date = _month_date_range(year=year, month=month)
@@ -76,10 +80,15 @@ class DataProviders:
             "end_date": end_date,
             "accounting_method": "Accrual",
         }
-        return self._cached_qbo_json(endpoint="/reports/GeneralLedger", params=params, schema="qbo.general_ledger.v1")
+        return self._cached_qbo_json(
+            endpoint="/reports/GeneralLedger",
+            params=params,
+            schema="qbo.general_ledger.v1",
+        )
 
     def get_payroll_runs(self, year: int) -> list[dict[str, Any]]:
-        if self._gusto is None:
+        gusto_client = self._gusto
+        if gusto_client is None:
             return []
 
         params = {
@@ -96,7 +105,7 @@ class DataProviders:
         )
 
         def fetcher() -> list[dict[str, Any]]:
-            response = self._gusto.request("GET", "/payrolls", params=params, required=False)
+            response = gusto_client.request("GET", "/payrolls", params=params, required=False)
             if response is None:
                 return []
             payload = response.json()
@@ -113,7 +122,9 @@ class DataProviders:
         return self._cached_qbo_json(endpoint="/query", params=params, schema="qbo.accounts.v1")
 
     def get_company_info(self) -> dict[str, Any]:
-        return self._cached_qbo_json(endpoint="/companyinfo", params={}, schema="qbo.company_info.v1")
+        return self._cached_qbo_json(
+            endpoint="/companyinfo", params={}, schema="qbo.company_info.v1"
+        )
 
     def _cached_qbo_json(
         self,
