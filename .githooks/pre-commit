@@ -1,4 +1,4 @@
 #!/usr/bin/env sh
 set -eu
 
-python3 scripts/precommit_pii_scan.py
+PYTHONPATH="${PYTHONPATH:-src}" python3 scripts/precommit_pii_scan.py
