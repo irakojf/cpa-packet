@@ -81,6 +81,8 @@ class BalanceSheetDeliverable:
     required = True
     dependencies: list[str] = []
     requires_gusto = False
+    year_offset = 0
+    empty_placeholder_label = "No transactions found"
 
     def gather_prompts(self, _ctx: object) -> dict[str, Any]:
         return {}
@@ -98,8 +100,9 @@ class BalanceSheetDeliverable:
         del prompts
 
         warnings: list[str] = []
-        as_of = f"{ctx.year}-12-31"
-        report_payload = store.get_balance_sheet(ctx.year, as_of)
+        report_year = ctx.year - self.year_offset
+        as_of = f"{report_year}-12-31"
+        report_payload = store.get_balance_sheet(report_year, as_of)
         company_payload = store.get_company_info()
 
         rows = normalize_balance_sheet_rows(report_payload)
@@ -108,11 +111,11 @@ class BalanceSheetDeliverable:
             rows = [
                 NormalizedRow(
                     section="Assets",
-                    label="No transactions found",
+                    label=self.empty_placeholder_label,
                     amount=Decimal("0"),
                     row_type="total",
                     level=0,
-                    path="No transactions found",
+                    path=self.empty_placeholder_label,
                 )
             ]
 
@@ -170,6 +173,7 @@ class BalanceSheetDeliverable:
             warnings=warnings,
             context_inputs={
                 "year": ctx.year,
+                "report_year": report_year,
                 "as_of_date": as_of,
                 "no_raw": ctx.no_raw,
                 "redact": ctx.redact,
@@ -184,6 +188,14 @@ class BalanceSheetDeliverable:
             warnings=warnings,
         )
 
+
+class PriorBalanceSheetDeliverable(BalanceSheetDeliverable):
+    """Prior-year (optional) balance sheet output alongside current-year output."""
+
+    key = "prior_balance_sheet"
+    required = False
+    year_offset = 1
+    empty_placeholder_label = "No prior-year data available"
 
 def validate_balance_equation(rows: Sequence[NormalizedRow]) -> BalanceEquationCheck:
     """Validate Assets = Liabilities + Equity within configured tolerance."""

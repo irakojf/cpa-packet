@@ -12,7 +12,10 @@ import respx
 from cpapacket.core.context import RunContext
 from cpapacket.data.providers import DataProviders
 from cpapacket.data.store import SessionDataStore
-from cpapacket.deliverables.balance_sheet import BalanceSheetDeliverable
+from cpapacket.deliverables.balance_sheet import (
+    BalanceSheetDeliverable,
+    PriorBalanceSheetDeliverable,
+)
 
 
 class _HttpQboClient:
@@ -179,3 +182,111 @@ def test_balance_sheet_pipeline_writes_warning_for_equation_mismatch(
     assert warnings
     assert "Balance equation mismatch" in warnings[0]
     assert result.warnings
+
+
+def test_prior_balance_sheet_uses_previous_year_as_of_date(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = json.loads(Path("tests/fixtures/qbo/balance_sheet_2025.json").read_text("utf-8"))
+    cache_dir = tmp_path / "_meta" / "private" / "cache"
+    store = SessionDataStore(cache_dir=cache_dir)
+
+    def fake_write_report(
+        self: object,
+        output_path: str | Path,
+        *,
+        company_name: str,
+        report_title: str,
+        date_range_label: str,
+        body_lines: list[Any],
+    ) -> Path:
+        destination = Path(output_path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"%PDF-1.4\n")
+        return destination
+
+    monkeypatch.setattr(
+        "cpapacket.deliverables.balance_sheet.PdfWriter.write_report",
+        fake_write_report,
+    )
+
+    with httpx.Client(base_url="https://api.example.test") as http_client:
+        providers = DataProviders(
+            store=store,
+            qbo_client=_HttpQboClient(http_client),
+            gusto_client=None,
+        )
+        deliverable = PriorBalanceSheetDeliverable()
+
+        with respx.mock(assert_all_called=True) as router:
+            route = router.get("https://api.example.test/reports/BalanceSheet").mock(
+                return_value=httpx.Response(200, json=fixture)
+            )
+            router.get("https://api.example.test/companyinfo").mock(
+                return_value=httpx.Response(200, json={"CompanyInfo": {"CompanyName": "Acme LLC"}})
+            )
+            result = deliverable.generate(_run_context(tmp_path), providers, prompts={})
+
+    assert result.success
+    assert route.call_count == 1
+    assert route.calls[0].request.url.params["as_of_date"] == "2024-12-31"
+    prior_csv = tmp_path / "02_Year-End_Balance_Sheet" / "Balance_Sheet_2024-12-31.csv"
+    assert prior_csv.exists()
+    prior_meta = tmp_path / "_meta" / "prior_balance_sheet_metadata.json"
+    metadata = json.loads(prior_meta.read_text(encoding="utf-8"))
+    assert metadata["deliverable"] == "prior_balance_sheet"
+
+
+def test_prior_balance_sheet_writes_placeholder_when_report_is_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    empty_fixture: dict[str, Any] = {"Rows": {"Row": []}}
+    cache_dir = tmp_path / "_meta" / "private" / "cache"
+    store = SessionDataStore(cache_dir=cache_dir)
+
+    def fake_write_report(
+        self: object,
+        output_path: str | Path,
+        *,
+        company_name: str,
+        report_title: str,
+        date_range_label: str,
+        body_lines: list[Any],
+    ) -> Path:
+        destination = Path(output_path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"%PDF-1.4\n")
+        return destination
+
+    monkeypatch.setattr(
+        "cpapacket.deliverables.balance_sheet.PdfWriter.write_report",
+        fake_write_report,
+    )
+
+    with httpx.Client(base_url="https://api.example.test") as http_client:
+        providers = DataProviders(
+            store=store,
+            qbo_client=_HttpQboClient(http_client),
+            gusto_client=None,
+        )
+        deliverable = PriorBalanceSheetDeliverable()
+
+        with respx.mock(assert_all_called=True) as router:
+            router.get("https://api.example.test/reports/BalanceSheet").mock(
+                return_value=httpx.Response(200, json=empty_fixture)
+            )
+            router.get("https://api.example.test/companyinfo").mock(
+                return_value=httpx.Response(200, json={"CompanyInfo": {"CompanyName": "Acme LLC"}})
+            )
+            result = deliverable.generate(_run_context(tmp_path), providers, prompts={})
+
+    assert result.success
+    prior_csv = tmp_path / "02_Year-End_Balance_Sheet" / "Balance_Sheet_2024-12-31.csv"
+    with prior_csv.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        row = next(reader, None)
+    assert row is not None
+    assert row["label"] == "No prior-year data available"
+    prior_meta = tmp_path / "_meta" / "prior_balance_sheet_metadata.json"
+    metadata = json.loads(prior_meta.read_text(encoding="utf-8"))
+    assert metadata["warnings"] == ["Balance sheet report normalized to zero rows."]
