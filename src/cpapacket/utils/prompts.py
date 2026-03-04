@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from time import gmtime, strftime
-from typing import Callable, Literal
+from typing import Literal
 
 ConflictAction = Literal["overwrite", "copy", "abort"]
 

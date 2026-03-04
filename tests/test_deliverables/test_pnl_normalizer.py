@@ -19,7 +19,14 @@ def test_normalize_pnl_rows_nested_sections_and_summary_rows() -> None:
                                     {"value": "1234.56"},
                                 ]
                             },
-                            {"Summary": {"ColData": [{"value": "Total Income"}, {"value": "1234.56"}]}},
+                            {
+                                "Summary": {
+                                    "ColData": [
+                                        {"value": "Total Income"},
+                                        {"value": "1234.56"},
+                                    ]
+                                }
+                            },
                         ]
                     },
                     "Summary": {"ColData": [{"value": "Total Income"}, {"value": "1234.56"}]},
@@ -63,4 +70,9 @@ def test_normalize_pnl_rows_nested_sections_and_summary_rows() -> None:
 def test_normalize_pnl_rows_handles_empty_or_invalid_shapes() -> None:
     assert normalize_pnl_rows({}) == []
     assert normalize_pnl_rows({"Rows": {"Row": "not-a-list"}}) == []
-    assert normalize_pnl_rows({"Rows": {"Row": [None, 123, {"ColData": [{"value": "Only Label"}]}]}}) != []
+    assert (
+        normalize_pnl_rows(
+            {"Rows": {"Row": [None, 123, {"ColData": [{"value": "Only Label"}]}]}}
+        )
+        != []
+    )

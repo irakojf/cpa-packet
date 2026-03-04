@@ -7,39 +7,37 @@ import getpass
 import hashlib
 import hmac
 import json
-import os
 import platform
 import secrets
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Lock
-from typing import Any, Final
+from typing import Any, Final, TextIO, cast
 from urllib.parse import urlencode
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from platformdirs import user_config_path
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from cpapacket.core.filesystem import atomic_write
 
+keyring: Any
+KeyringError: type[Exception]
 try:
     import keyring
     from keyring.errors import KeyringError
-
-    _KEYRING_AVAILABLE: Final[bool] = True
+    _KEYRING_AVAILABLE = True
 except Exception:  # pragma: no cover - import error path varies by runtime
     keyring = None
-
-    class KeyringError(Exception):
-        """Fallback keyring error type when keyring import is unavailable."""
-
+    KeyringError = RuntimeError
     _KEYRING_AVAILABLE = False
 
+fcntl: Any
 try:
     import fcntl
 
-    _HAS_FCNTL: Final[bool] = True
+    _HAS_FCNTL = True
 except Exception:  # pragma: no cover - non-POSIX fallback
     fcntl = None
     _HAS_FCNTL = False
@@ -79,7 +77,7 @@ class OAuthToken(BaseModel):
         token_type: str = "Bearer",
         scope: str | None = None,
         issued_at: datetime | None = None,
-    ) -> "OAuthToken":
+    ) -> OAuthToken:
         """Build a token model from an OAuth token endpoint response."""
         base = issued_at.astimezone(UTC) if issued_at is not None else datetime.now(UTC)
         if expires_in_seconds <= 0:
@@ -179,10 +177,8 @@ class OAuthTokenStore:
     def clear_token(self) -> None:
         """Clear keyring token and mark fallback token as revoked."""
         if _KEYRING_AVAILABLE and keyring is not None:
-            try:
+            with suppress(Exception):
                 keyring.delete_password(self._service_name, _STORED_USERNAME)
-            except Exception:
-                pass
 
         revoked_payload = json.dumps({"revoked": True, "provider": self._provider_name})
         self._save_to_encrypted_fallback(revoked_payload)
@@ -192,15 +188,14 @@ class OAuthTokenStore:
         """Serialize token refreshes across threads/processes for a provider."""
         self._lock_path.parent.mkdir(parents=True, exist_ok=True)
         thread_lock = _provider_thread_lock(self._provider_name)
-        with thread_lock:
-            with open(self._lock_path, "a+", encoding="utf-8") as handle:
+        with thread_lock, open(self._lock_path, "a+", encoding="utf-8") as handle:
+            if _HAS_FCNTL and fcntl is not None:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
                 if _HAS_FCNTL and fcntl is not None:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-                try:
-                    yield
-                finally:
-                    if _HAS_FCNTL and fcntl is not None:
-                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
     def _save_to_keyring(self, payload: str) -> bool:
         if not _KEYRING_AVAILABLE or keyring is None:
@@ -217,14 +212,14 @@ class OAuthTokenStore:
             return None
 
         try:
-            return keyring.get_password(self._service_name, _STORED_USERNAME)
+            return cast(str | None, keyring.get_password(self._service_name, _STORED_USERNAME))
         except (KeyringError, RuntimeError):
             return None
 
     def _save_to_encrypted_fallback(self, payload: str) -> None:
         envelope = _encrypt_payload(payload, self._provider_name)
         with atomic_write(self._fallback_path) as handle:
-            handle.write(json.dumps(envelope, sort_keys=True))
+            cast(TextIO, handle).write(json.dumps(envelope, sort_keys=True))
 
     def _load_from_encrypted_fallback(self) -> str | None:
         if not self._fallback_path.exists():
@@ -318,8 +313,10 @@ def _decrypt_payload(payload: str, provider_name: str) -> str | None:
         nonce_value = envelope.get("nonce")
         ciphertext_value = envelope.get("ciphertext")
         mac_value = envelope.get("mac")
-        if not isinstance(nonce_value, str) or not isinstance(ciphertext_value, str) or not isinstance(
-            mac_value, str
+        if (
+            not isinstance(nonce_value, str)
+            or not isinstance(ciphertext_value, str)
+            or not isinstance(mac_value, str)
         ):
             return None
 

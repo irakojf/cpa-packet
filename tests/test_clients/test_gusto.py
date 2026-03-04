@@ -160,8 +160,10 @@ def test_exchange_code_for_token_saves_token() -> None:
 
 
 def test_request_retries_once_after_401() -> None:
-    expired = _token(-5)
-    store = InMemoryTokenStore(token=expired)
+    # Use a non-expired token so get_valid_token() returns it without refreshing.
+    # The server will reject it with 401, triggering the refresh-and-retry path.
+    valid_looking = _token(300)
+    store = InMemoryTokenStore(token=valid_looking)
     http_client = FakeHttpClient()
     http_client.post_queue.append(
         FakeResponse(

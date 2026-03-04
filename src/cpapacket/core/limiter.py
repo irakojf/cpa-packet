@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Iterator, Literal
+from typing import Literal
 
 from cpapacket.utils.constants import GUSTO_MAX_CONCURRENCY, QBO_MAX_CONCURRENCY
 

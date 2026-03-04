@@ -42,3 +42,29 @@ def test_ensure_meta_directories_creates_public_and_private(tmp_path: Path) -> N
     assert private_dir == packet_root / "_meta" / "private"
     assert public_dir.exists()
     assert private_dir.exists()
+
+
+def test_resolve_deliverable_dir_is_lazy_by_default(tmp_path: Path) -> None:
+    packet_root = tmp_path / "Example_2025_CPA_Packet"
+
+    target = PacketStructureManager.resolve_deliverable_dir(
+        packet_root,
+        deliverable_key="pnl",
+        create=False,
+    )
+
+    assert target == packet_root / "01_Year-End_Profit_and_Loss"
+    assert not target.exists()
+
+
+def test_resolve_deliverable_dir_creates_when_requested(tmp_path: Path) -> None:
+    packet_root = tmp_path / "Example_2025_CPA_Packet"
+
+    target = PacketStructureManager.resolve_deliverable_dir(
+        packet_root,
+        deliverable_key="pnl",
+        create=True,
+    )
+
+    assert target.exists()
+    assert target.is_dir()

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from cpapacket.core.filesystem import ensure_directory, sanitize_filesystem_name
+from cpapacket.utils.constants import DELIVERABLE_FOLDERS
 
 
 class PacketStructureManager:
@@ -24,6 +25,24 @@ class PacketStructureManager:
         """Return packet root path using a QBO CompanyInfo payload."""
         company_name = _extract_company_name(company_info)
         return self.packet_dir_for_company(company_name=company_name, year=year)
+
+    @staticmethod
+    def resolve_deliverable_dir(
+        packet_root: Path | str,
+        *,
+        deliverable_key: str,
+        create: bool = False,
+    ) -> Path:
+        """Resolve deliverable directory path, creating it only when requested."""
+        if deliverable_key not in DELIVERABLE_FOLDERS:
+            raise KeyError(f"unknown deliverable key: {deliverable_key}")
+
+        root = Path(packet_root)
+        folder = DELIVERABLE_FOLDERS[deliverable_key]
+        target = root / folder
+        if create:
+            ensure_directory(target)
+        return target
 
     @staticmethod
     def ensure_meta_directories(packet_root: Path | str) -> tuple[Path, Path]:
