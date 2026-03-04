@@ -1,0 +1,26 @@
+{
+  "CompanyInfo": {
+    "CompanyName": "Northwind Orchard Holdings LLC",
+    "LegalName": "Northwind Orchard Holdings LLC",
+    "CompanyAddr": {
+      "Line1": "123 Orchard Lane",
+      "City": "Ithaca",
+      "CountrySubDivisionCode": "NY",
+      "PostalCode": "14850",
+      "Country": "USA"
+    },
+    "Email": {
+      "Address": "redacted"
+    },
+    "PrimaryPhone": {
+      "FreeFormNumber": "redacted"
+    },
+    "NameValue": [
+      {
+        "Name": "QBORealmId",
+        "Value": "4620816365371523400"
+      }
+    ]
+  },
+  "time": "2026-01-15T12:00:00.000Z"
+}

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from cpapacket.packet.structure import PacketStructureManager
@@ -23,6 +24,16 @@ def test_packet_dir_from_company_info_uses_company_name(tmp_path: Path) -> None:
     packet_dir = manager.packet_dir_from_company_info(company_info=payload, year=2024)
 
     assert packet_dir == tmp_path / "Example_Co_2024_CPA_Packet"
+
+
+def test_packet_dir_from_company_info_uses_fixture_payload(tmp_path: Path) -> None:
+    manager = PacketStructureManager(output_root=tmp_path)
+    fixture_path = Path("tests/fixtures/qbo/company_info.json")
+    payload = json.loads(fixture_path.read_text(encoding="utf-8"))
+
+    packet_dir = manager.packet_dir_from_company_info(company_info=payload, year=2025)
+
+    assert packet_dir == tmp_path / "Northwind_Orchard_Holdings_LLC_2025_CPA_Packet"
 
 
 def test_packet_dir_from_company_info_falls_back_to_untitled(tmp_path: Path) -> None:
