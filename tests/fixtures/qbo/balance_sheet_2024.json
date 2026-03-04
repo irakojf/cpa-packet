@@ -1,0 +1,60 @@
+{
+  "Header": {
+    "ReportName": "BalanceSheet",
+    "ReportBasis": "Accrual",
+    "StartPeriod": "2024-01-01",
+    "EndPeriod": "2024-12-31",
+    "Currency": "USD",
+    "CompanyName": "Northwind Orchard Holdings LLC"
+  },
+  "Columns": {
+    "Column": [
+      {"ColTitle": "Account"},
+      {"ColTitle": "Amount"}
+    ]
+  },
+  "Rows": {
+    "Row": [
+      {
+        "Header": {"ColData": [{"value": "Assets"}]},
+        "Rows": {
+          "Row": [
+            {"ColData": [{"value": "Checking"}, {"value": "54000.00"}]},
+            {"ColData": [{"value": "Accounts Receivable"}, {"value": "18000.00"}]},
+            {"ColData": [{"value": "Prepaid Expenses"}, {"value": "10000.00"}]},
+            {"ColData": [{"value": "Equipment"}, {"value": "38000.00"}]}
+          ]
+        },
+        "Summary": {"ColData": [{"value": "Total Assets"}, {"value": "120000.00"}]}
+      },
+      {
+        "Header": {"ColData": [{"value": "Liabilities"}]},
+        "Rows": {
+          "Row": [
+            {"ColData": [{"value": "Accounts Payable"}, {"value": "17000.00"}]},
+            {"ColData": [{"value": "Credit Card"}, {"value": "7000.00"}]},
+            {"ColData": [{"value": "Payroll Liabilities"}, {"value": "9000.00"}]},
+            {"ColData": [{"value": "Term Loan"}, {"value": "17000.00"}]}
+          ]
+        },
+        "Summary": {"ColData": [{"value": "Total Liabilities"}, {"value": "50000.00"}]}
+      },
+      {
+        "Header": {"ColData": [{"value": "Equity"}]},
+        "Rows": {
+          "Row": [
+            {"ColData": [{"value": "Owner Contributions"}, {"value": "54000.00"}]},
+            {"ColData": [{"value": "Retained Earnings"}, {"value": "16000.00"}]}
+          ]
+        },
+        "Summary": {"ColData": [{"value": "Total Equity"}, {"value": "70000.00"}]}
+      }
+    ]
+  },
+  "Summary": {
+    "ColData": [
+      {"value": "Total Liabilities and Equity"},
+      {"value": "120000.00"}
+    ]
+  }
+}
