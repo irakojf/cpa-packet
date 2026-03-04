@@ -10,7 +10,10 @@ from typing import Any, Literal, cast
 
 import click
 
+from cpapacket.cli.doctor import register_doctor_command
+from cpapacket.cli.general_ledger import register_general_ledger_command
 from cpapacket.cli.pnl import register_pnl_command
+from cpapacket.cli.privacy import register_privacy_command
 from cpapacket.clients.auth import OAuthTokenStore
 from cpapacket.clients.gusto import GustoOAuthClient, GustoOAuthConfig
 from cpapacket.clients.qbo import QboOAuthClient, QboOAuthConfig
@@ -198,6 +201,10 @@ def cli(
 
 
 register_pnl_command(cli)
+register_general_ledger_command(cli)
+register_doctor_command(cli)
+register_privacy_command(cli)
+register_doctor_command(cli)
 
 
 @cli.command("context-debug")
