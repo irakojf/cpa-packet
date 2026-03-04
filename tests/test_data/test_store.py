@@ -153,6 +153,7 @@ def test_set_writes_gzip_payload_and_meta(tmp_path: Path) -> None:
     metadata = json.loads(meta_path.read_text(encoding="utf-8"))
     assert metadata["cache_key"] == "abc123"
     assert metadata["ttl_seconds"] > 0
+    assert str(metadata["payload_sha256"]).startswith("sha256:")
 
 
 def test_store_warms_memory_cache_from_disk_on_init(tmp_path: Path) -> None:
@@ -183,3 +184,25 @@ def test_expired_disk_entries_are_ignored(tmp_path: Path) -> None:
     value, source = reloaded.get_or_fetch("expiring-key", lambda: {"value": 2})
     assert value == {"value": 2}
     assert source == "api"
+
+
+def test_integrity_mismatch_quarantines_and_refetches(tmp_path: Path) -> None:
+    cache_dir = tmp_path / "_meta" / "private" / "cache"
+    seed = SessionDataStore(cache_dir=cache_dir)
+    seed.set("bad-key", {"value": 1})
+
+    meta_path = cache_dir / "bad-key.meta.json"
+    metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+    metadata["payload_sha256"] = "sha256:deadbeef"
+    meta_path.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
+
+    loaded = SessionDataStore(cache_dir=cache_dir)
+    value, source = loaded.get_or_fetch("bad-key", lambda: {"value": 2})
+
+    assert value == {"value": 2}
+    assert source == "api"
+
+    quarantine_dir = cache_dir / "quarantine"
+    assert quarantine_dir.exists()
+    quarantine_files = list(quarantine_dir.glob("bad-key__*.quarantine.json"))
+    assert quarantine_files, "expected quarantine marker file"

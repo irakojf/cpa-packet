@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import gzip
+import hashlib
 import json
+import shutil
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -172,6 +175,7 @@ class SessionDataStore:
             "cached_at": cached_at.isoformat(),
             "expires_at": (cached_at + self._ttl).isoformat(),
             "ttl_seconds": int(self._ttl.total_seconds()),
+            "payload_sha256": f"sha256:{hashlib.sha256(encoded).hexdigest()}",
         }
         meta_path = cache_dir / f"{cache_key}.meta.json"
         with atomic_write(meta_path) as handle:
@@ -199,7 +203,53 @@ class SessionDataStore:
             if expires_at < self._now():
                 return None
 
-            with gzip.open(payload_path, mode="rt", encoding="utf-8") as handle:
-                return cast(object, json.load(handle))
+            with gzip.open(payload_path, mode="rb") as handle:
+                payload_bytes = handle.read()
+
+            expected_sha = metadata.get("payload_sha256")
+            if isinstance(expected_sha, str):
+                actual_sha = f"sha256:{hashlib.sha256(payload_bytes).hexdigest()}"
+                if actual_sha != expected_sha:
+                    self._quarantine_corrupt_entry(
+                        cache_key=cache_key,
+                        reason="payload_sha256_mismatch",
+                        payload_path=payload_path,
+                        meta_path=meta_path,
+                    )
+                    return None
+
+            return cast(object, json.loads(payload_bytes.decode("utf-8")))
         except (OSError, ValueError, json.JSONDecodeError):
             return None
+
+    def _quarantine_corrupt_entry(
+        self,
+        *,
+        cache_key: str,
+        reason: str,
+        payload_path: Path,
+        meta_path: Path,
+    ) -> None:
+        cache_dir = self._cache_dir
+        if cache_dir is None:
+            return
+
+        quarantine_dir = ensure_directory(cache_dir / "quarantine")
+        stamp = self._now().strftime("%Y%m%dT%H%M%SZ")
+        prefix = f"{cache_key}__{stamp}"
+
+        if payload_path.exists():
+            with suppress(OSError):
+                shutil.copy2(payload_path, quarantine_dir / f"{prefix}.json.gz")
+        if meta_path.exists():
+            with suppress(OSError):
+                shutil.copy2(meta_path, quarantine_dir / f"{prefix}.meta.json")
+
+        info = {
+            "cache_key": cache_key,
+            "reason": reason,
+            "quarantined_at": self._now().isoformat(),
+        }
+        with atomic_write(quarantine_dir / f"{prefix}.quarantine.json") as handle:
+            cast(IO[str], handle).write(json.dumps(info, indent=2, sort_keys=True))
+            cast(IO[str], handle).write("\n")
