@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import csv
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any
 
 from cpapacket.core.filesystem import atomic_write
 
@@ -59,6 +60,54 @@ class CsvWriter:
             )
             writer.writeheader()
             for row in rows:
+                writer.writerow(
+                    {header: _serialize_cell(row.get(header)) for header in normalized_headers}
+                )
+        return output
+
+    def write_rows_streaming(
+        self,
+        output_path: str | Path,
+        *,
+        fieldnames: Sequence[str],
+        rows: Iterable[Mapping[str, Any]],
+        dedupe_id_field: str | None = "txn_id",
+    ) -> Path:
+        """Write rows in a streaming fashion with optional id-based deduplication."""
+        if not fieldnames:
+            raise ValueError("fieldnames must not be empty")
+
+        normalized_headers = [name.strip() for name in fieldnames]
+        if any(not name for name in normalized_headers):
+            raise ValueError("fieldnames must not contain blank values")
+
+        output = Path(output_path)
+        output.parent.mkdir(parents=True, exist_ok=True)
+
+        seen_ids: set[str] = set()
+        with atomic_write(
+            output,
+            mode="w",
+            encoding=self._config.encoding,
+            newline="",
+        ) as handle:
+            writer = csv.DictWriter(
+                handle,
+                fieldnames=normalized_headers,
+                quoting=csv.QUOTE_MINIMAL,
+                delimiter=self._config.delimiter,
+                lineterminator=self._config.line_terminator,
+                extrasaction="ignore",
+            )
+            writer.writeheader()
+            for row in rows:
+                if dedupe_id_field is not None:
+                    raw_id = row.get(dedupe_id_field)
+                    if raw_id is not None:
+                        normalized_id = str(raw_id)
+                        if normalized_id in seen_ids:
+                            continue
+                        seen_ids.add(normalized_id)
                 writer.writerow(
                     {header: _serialize_cell(row.get(header)) for header in normalized_headers}
                 )

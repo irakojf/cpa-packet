@@ -67,3 +67,42 @@ def test_csv_writer_rejects_invalid_fieldnames(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="fieldnames must not contain blank values"):
         writer.write_rows(out, fieldnames=["ok", " "], rows=[])
+
+
+def test_csv_writer_streaming_deduplicates_by_txn_id(tmp_path: Path) -> None:
+    writer = CsvWriter()
+    out = tmp_path / "streaming.csv"
+
+    writer.write_rows_streaming(
+        out,
+        fieldnames=["txn_id", "name", "amount"],
+        rows=[
+            {"txn_id": "A1", "name": "row1", "amount": Decimal("10.00")},
+            {"txn_id": "A1", "name": "dup", "amount": Decimal("99.00")},
+            {"txn_id": "A2", "name": "row2", "amount": Decimal("20.00")},
+        ],
+    )
+
+    lines = out.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == "txn_id,name,amount"
+    assert lines[1] == "A1,row1,10.00"
+    assert lines[2] == "A2,row2,20.00"
+    assert len(lines) == 3
+
+
+def test_csv_writer_streaming_without_dedupe_writes_all_rows(tmp_path: Path) -> None:
+    writer = CsvWriter()
+    out = tmp_path / "streaming_all.csv"
+
+    writer.write_rows_streaming(
+        out,
+        fieldnames=["txn_id", "name"],
+        rows=[
+            {"txn_id": "A1", "name": "row1"},
+            {"txn_id": "A1", "name": "dup"},
+        ],
+        dedupe_id_field=None,
+    )
+
+    lines = out.read_text(encoding="utf-8").splitlines()
+    assert lines == ["txn_id,name", "A1,row1", "A1,dup"]
