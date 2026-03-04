@@ -1,0 +1,113 @@
+{
+  "company_uuid": "c9a0e1e9-3a5b-4b90-9e0b-20a3f7f7d111",
+  "year": 2025,
+  "payrolls": [
+    {
+      "uuid": "payroll-2025-01",
+      "pay_period_start_date": "2025-01-01",
+      "pay_period_end_date": "2025-01-15",
+      "check_date": "2025-01-20",
+      "totals": {
+        "gross_pay": "18500.00",
+        "net_pay": "13225.00",
+        "employee_taxes": "2915.00",
+        "employer_taxes": "1820.00",
+        "benefits": "540.00"
+      },
+      "employee_compensations": [
+        {
+          "employee_uuid": "emp-001",
+          "employee_name": "Alex Rivera",
+          "department": "Operations",
+          "regular_pay": "6000.00",
+          "bonus_pay": "500.00",
+          "overtime_pay": "0.00",
+          "employee_401k": "300.00",
+          "employer_401k": "180.00",
+          "net_pay": "4450.00"
+        },
+        {
+          "employee_uuid": "emp-002",
+          "employee_name": "Taylor Chen",
+          "department": "Sales",
+          "regular_pay": "7000.00",
+          "bonus_pay": "1000.00",
+          "overtime_pay": "0.00",
+          "employee_401k": "350.00",
+          "employer_401k": "210.00",
+          "net_pay": "5675.00"
+        },
+        {
+          "employee_uuid": "emp-003",
+          "employee_name": "Jordan Malik",
+          "department": "Engineering",
+          "regular_pay": "4000.00",
+          "bonus_pay": "0.00",
+          "overtime_pay": "0.00",
+          "employee_401k": "200.00",
+          "employer_401k": "120.00",
+          "net_pay": "3100.00"
+        }
+      ]
+    },
+    {
+      "uuid": "payroll-2025-02",
+      "pay_period_start_date": "2025-01-16",
+      "pay_period_end_date": "2025-01-31",
+      "check_date": "2025-02-05",
+      "totals": {
+        "gross_pay": "19200.00",
+        "net_pay": "13690.00",
+        "employee_taxes": "3025.00",
+        "employer_taxes": "1885.00",
+        "benefits": "600.00"
+      },
+      "employee_compensations": [
+        {
+          "employee_uuid": "emp-001",
+          "employee_name": "Alex Rivera",
+          "department": "Operations",
+          "regular_pay": "6200.00",
+          "bonus_pay": "0.00",
+          "overtime_pay": "250.00",
+          "employee_401k": "310.00",
+          "employer_401k": "186.00",
+          "net_pay": "4605.00"
+        },
+        {
+          "employee_uuid": "emp-002",
+          "employee_name": "Taylor Chen",
+          "department": "Sales",
+          "regular_pay": "7200.00",
+          "bonus_pay": "500.00",
+          "overtime_pay": "0.00",
+          "employee_401k": "360.00",
+          "employer_401k": "216.00",
+          "net_pay": "5590.00"
+        },
+        {
+          "employee_uuid": "emp-003",
+          "employee_name": "Jordan Malik",
+          "department": "Engineering",
+          "regular_pay": "4200.00",
+          "bonus_pay": "0.00",
+          "overtime_pay": "0.00",
+          "employee_401k": "210.00",
+          "employer_401k": "126.00",
+          "net_pay": "3495.00"
+        },
+        {
+          "employee_uuid": "emp-004",
+          "employee_name": "Casey O'Neil",
+          "department": "Support",
+          "regular_pay": "1100.00",
+          "bonus_pay": "0.00",
+          "overtime_pay": "0.00",
+          "employee_401k": "55.00",
+          "employer_401k": "33.00",
+          "net_pay": "0.00"
+        }
+      ]
+    }
+  ]
+}

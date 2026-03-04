@@ -1,0 +1,45 @@
+{
+  "company_uuid": "c9a0e1e9-3a5b-4b90-9e0b-20a3f7f7d111",
+  "employees": [
+    {
+      "uuid": "emp-001",
+      "first_name": "Alex",
+      "last_name": "Rivera",
+      "email": "employee-alex-rivera",
+      "department": "Operations",
+      "status": "active",
+      "start_date": "2023-07-10",
+      "termination_date": null
+    },
+    {
+      "uuid": "emp-002",
+      "first_name": "Taylor",
+      "last_name": "Chen",
+      "email": "employee-taylor-chen",
+      "department": "Sales",
+      "status": "active",
+      "start_date": "2022-04-18",
+      "termination_date": null
+    },
+    {
+      "uuid": "emp-003",
+      "first_name": "Jordan",
+      "last_name": "Malik",
+      "email": "employee-jordan-malik",
+      "department": "Engineering",
+      "status": "active",
+      "start_date": "2024-02-12",
+      "termination_date": null
+    },
+    {
+      "uuid": "emp-004",
+      "first_name": "Casey",
+      "last_name": "O'Neil",
+      "email": "employee-casey-oneil",
+      "department": "Support",
+      "status": "terminated",
+      "start_date": "2021-09-01",
+      "termination_date": "2025-02-07"
+    }
+  ]
+}
