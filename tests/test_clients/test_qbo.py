@@ -57,7 +57,9 @@ class FakeHttpClient:
         self.post_queue: list[FakeResponse] = []
         self.request_queue: list[FakeResponse] = []
 
-    def post(self, url: str, *, data: dict[str, str], auth: tuple[str, str], headers: dict[str, str]) -> FakeResponse:
+    def post(
+        self, url: str, *, data: dict[str, str], auth: tuple[str, str], headers: dict[str, str]
+    ) -> FakeResponse:
         self.post_calls.append({"url": url, "data": data, "auth": auth, "headers": headers})
         return self.post_queue.pop(0)
 
@@ -136,10 +138,10 @@ def test_exchange_code_for_token_saves_token() -> None:
 
 
 def test_request_retries_once_after_401() -> None:
-    expired = _token(-10)
-    fresh = _token(3600)
-    fresh = fresh.model_copy(update={"access_token": "fresh-access", "refresh_token": "fresh-refresh"})
-    store = InMemoryTokenStore(token=expired)
+    # Use a non-expired token so get_valid_token() returns it without refreshing.
+    # The server rejects it with 401, triggering the refresh-and-retry path.
+    valid_looking = _token(300)
+    store = InMemoryTokenStore(token=valid_looking)
 
     http_client = FakeHttpClient()
     http_client.post_queue.append(
@@ -171,7 +173,9 @@ def test_request_retries_once_after_401() -> None:
 
     assert response.status_code == 200
     assert len(http_client.request_calls) == 2
-    assert http_client.request_calls[0]["headers"]["Authorization"] == "Bearer fresh-access"
+    # First request uses original token, gets 401
+    assert http_client.request_calls[0]["headers"]["Authorization"] == "Bearer access"
+    # After refresh, second request uses fresh token
     assert http_client.request_calls[1]["headers"]["Authorization"] == "Bearer fresh-access"
 
 
@@ -190,3 +194,43 @@ def test_request_requires_realm_id() -> None:
 
     with pytest.raises(RuntimeError, match="realm_id is required"):
         client.request("GET", "/companyinfo")
+
+
+def test_get_company_info_uses_companyinfo_endpoint() -> None:
+    store = InMemoryTokenStore(token=_token(3600))
+    http_client = FakeHttpClient()
+    http_client.request_queue.append(
+        FakeResponse(200, {"CompanyInfo": {"CompanyName": "Example Co"}})
+    )
+    client = QboOAuthClient(
+        QboOAuthConfig(
+            client_id="cid",
+            client_secret="secret",
+            redirect_uri="http://localhost/callback",
+            realm_id="12345",
+        ),
+        token_store=store,
+        http_client=http_client,
+    )
+
+    payload = client.get_company_info()
+
+    assert payload["CompanyInfo"]["CompanyName"] == "Example Co"
+    assert len(http_client.request_calls) == 1
+    assert http_client.request_calls[0]["url"].endswith("/12345/companyinfo/12345")
+
+
+def test_get_company_info_requires_realm_id() -> None:
+    client = QboOAuthClient(
+        QboOAuthConfig(
+            client_id="cid",
+            client_secret="secret",
+            redirect_uri="http://localhost/callback",
+            realm_id=None,
+        ),
+        token_store=InMemoryTokenStore(token=_token(3600)),
+        http_client=FakeHttpClient(),
+    )
+
+    with pytest.raises(RuntimeError, match="realm_id is required"):
+        client.get_company_info()

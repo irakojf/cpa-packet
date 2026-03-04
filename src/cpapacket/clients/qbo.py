@@ -135,6 +135,18 @@ class QboOAuthClient:
         retry.raise_for_status()
         return retry
 
+    def get_company_info(self) -> dict[str, Any]:
+        """Fetch QBO company info payload for the configured realm."""
+        realm_id = self._config.realm_id
+        if realm_id is None or not realm_id.strip():
+            raise RuntimeError("QBO realm_id is required for company info requests.")
+
+        response = self.request("GET", f"/companyinfo/{realm_id.strip()}")
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise TypeError("QBO company info payload must be an object")
+        return payload
+
     def _post_token(self, form_data: dict[str, str]) -> OAuthToken:
         response = self._http.post(
             self._config.token_url,
