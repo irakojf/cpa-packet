@@ -7,6 +7,7 @@ from cpapacket.clients.auth import OAuthToken
 from cpapacket.packet.doctor import (
     run_gusto_token_check,
     run_python_environment_check,
+    run_qbo_connectivity_check,
     run_qbo_token_check,
 )
 
@@ -112,6 +113,31 @@ def test_run_qbo_token_check_fails_when_refresh_probe_errors() -> None:
     assert any(item == "expired=true" for item in result.details)
     assert any(item == "refresh_error=invalid_grant" for item in result.details)
     assert result.guidance == "Re-authenticate with `cpapacket auth qbo login` and retry doctor."
+
+
+def test_run_qbo_connectivity_check_passes_with_company_name() -> None:
+    result = run_qbo_connectivity_check(
+        company_info_probe=lambda: {"CompanyInfo": {"CompanyName": "Acme LLC"}},
+    )
+
+    assert result.status == "pass"
+    assert result.summary == "QBO connectivity check passed."
+    assert "company=Acme LLC" in result.details
+
+
+def test_run_qbo_connectivity_check_fails_when_probe_errors() -> None:
+    def failing_probe() -> dict[str, object]:
+        raise RuntimeError("connection timeout")
+
+    result = run_qbo_connectivity_check(company_info_probe=failing_probe)
+
+    assert result.status == "fail"
+    assert result.summary == "QBO connectivity check failed."
+    assert "probe_error=connection timeout" in result.details
+    assert (
+        result.guidance
+        == "Verify network access and QBO credentials, then rerun `cpapacket doctor`."
+    )
 
 
 def test_run_gusto_token_check_passes_when_not_configured() -> None:

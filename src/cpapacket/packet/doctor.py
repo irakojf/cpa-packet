@@ -45,6 +45,42 @@ class QboTokenRefreshProbe(Protocol):
         """Validate refresh token flow and return refreshed token."""
 
 
+class QboCompanyInfoProbe(Protocol):
+    def __call__(self) -> dict[str, object]:
+        """Fetch lightweight company info from QBO."""
+
+
+def run_qbo_connectivity_check(
+    *,
+    company_info_probe: QboCompanyInfoProbe,
+) -> DoctorCheckResult:
+    """Validate QBO API connectivity using a lightweight company-info call."""
+    try:
+        payload = company_info_probe()
+    except Exception as exc:
+        return DoctorCheckResult(
+            check_name="qbo_connectivity",
+            status="fail",
+            summary="QBO connectivity check failed.",
+            details=[f"probe_error={exc}"],
+            guidance=(
+                "Verify network access and QBO credentials, then rerun `cpapacket doctor`."
+            ),
+        )
+
+    company_name = _extract_company_name(payload)
+    details = []
+    if company_name:
+        details.append(f"company={company_name}")
+
+    return DoctorCheckResult(
+        check_name="qbo_connectivity",
+        status="pass",
+        summary="QBO connectivity check passed.",
+        details=details,
+    )
+
+
 def run_python_environment_check(
     *,
     min_version: tuple[int, int] = (3, 11),
@@ -176,3 +212,17 @@ def run_gusto_token_check(
         summary="Gusto token check passed.",
         details=[*details, f"seconds_to_expiry={age_seconds}", "refresh_probe=ok"],
     )
+
+
+def _extract_company_name(payload: dict[str, object]) -> str | None:
+    company_info = payload.get("CompanyInfo")
+    if isinstance(company_info, dict):
+        nested = company_info.get("CompanyName")
+        if isinstance(nested, str) and nested.strip():
+            return nested.strip()
+
+    top_level = payload.get("CompanyName")
+    if isinstance(top_level, str) and top_level.strip():
+        return top_level.strip()
+
+    return None
