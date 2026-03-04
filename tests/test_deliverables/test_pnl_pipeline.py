@@ -53,30 +53,33 @@ def _run_context(tmp_path: Path) -> RunContext:
 
 
 def _run_deliverable_with_fixture(
-    tmp_path: Path, fixture_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    fixture_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    stub_pdf: bool = True,
 ) -> tuple[respx.MockRoute, Path, Path, Path, Path, Any]:
     fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
     cache_dir = tmp_path / "_meta" / "private" / "cache"
     store = SessionDataStore(cache_dir=cache_dir)
 
-    fake_pdf_target: dict[str, Path] = {}
+    if stub_pdf:
 
-    def fake_write_report(
-        self: object,
-        output_path: str | Path,
-        *,
-        company_name: str,
-        report_title: str,
-        date_range_label: str,
-        body_lines: list[Any],
-    ) -> Path:
-        destination = Path(output_path)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(b"%PDF-1.4\n")
-        fake_pdf_target["path"] = destination
-        return destination
+        def fake_write_report(
+            self: object,
+            output_path: str | Path,
+            *,
+            company_name: str,
+            report_title: str,
+            date_range_label: str,
+            body_lines: list[Any],
+        ) -> Path:
+            destination = Path(output_path)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(b"%PDF-1.4\n")
+            return destination
 
-    monkeypatch.setattr("cpapacket.deliverables.pnl.PdfWriter.write_report", fake_write_report)
+        monkeypatch.setattr("cpapacket.deliverables.pnl.PdfWriter.write_report", fake_write_report)
 
     with httpx.Client(base_url="https://api.example.test") as http_client:
         qbo_client = _HttpQboClient(http_client)
@@ -164,8 +167,28 @@ def test_pnl_csv_snapshot_handles_empty_fixture(
 
     lines = csv_path.read_text(encoding="utf-8").splitlines()
     assert lines[0] == "section,level,row_type,label,amount,path"
-    assert lines[1:] == [
-        "Uncategorized,0,total,No transactions found,0.00,No transactions found"
-    ]
+    assert lines[1:] == ["Uncategorized,0,total,No transactions found,0.00,No transactions found"]
+    assert route.call_count == 1
+    assert result.success
+
+
+def test_pnl_pdf_snapshot_contains_expected_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    route, _, pdf_path, _, _, result = _run_deliverable_with_fixture(
+        tmp_path,
+        Path("tests/fixtures/qbo/profit_and_loss_annual.json"),
+        monkeypatch,
+        stub_pdf=False,
+    )
+
+    pdfplumber = pytest.importorskip("pdfplumber")
+    with pdfplumber.open(pdf_path) as doc:
+        extracted = "\n".join(page.extract_text() or "" for page in doc.pages)
+
+    assert "Acme LLC" in extracted
+    assert "Profit and Loss" in extracted
+    assert "Product Revenue" in extracted
+    assert "Page 1 of" in extracted
     assert route.call_count == 1
     assert result.success
