@@ -8,6 +8,7 @@
 # 1. OAuth Credentials and Secrets
 # ---------------------------------------------------------------------------
 .env
+.env*
 .env.*
 .env.local
 .env.production
@@ -36,6 +37,8 @@ _meta/
 #    CSVs in output dirs contain full transaction-level data
 # ---------------------------------------------------------------------------
 *.pdf
+*_CPA_Packet/**/*.pdf
+*_CPA_Packet/**/*.csv
 
 # ---------------------------------------------------------------------------
 # 5. Local Config Artifacts (tax tracker state)
