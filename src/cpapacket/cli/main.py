@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import secrets
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -9,6 +11,7 @@ from typing import Any, Literal, cast
 import click
 
 from cpapacket.clients.auth import OAuthTokenStore
+from cpapacket.clients.qbo import QboOAuthClient, QboOAuthConfig
 from cpapacket.core.context import RunContext, resolve_year_and_source
 
 MethodOption = Literal["accrual", "cash"]
@@ -35,6 +38,24 @@ def _detect_gusto_availability() -> bool:
     except Exception:
         # Gusto auth is optional; detection failures should never block execution.
         return False
+
+
+def _required_env(name: str) -> str:
+    value = os.getenv(name, "").strip()
+    if not value:
+        raise click.ClickException(f"Missing required environment variable: {name}")
+    return value
+
+
+def _build_qbo_client(*, realm_id: str | None = None) -> QboOAuthClient:
+    return QboOAuthClient(
+        QboOAuthConfig(
+            client_id=_required_env("CPAPACKET_QBO_CLIENT_ID"),
+            client_secret=_required_env("CPAPACKET_QBO_CLIENT_SECRET"),
+            redirect_uri=_required_env("CPAPACKET_QBO_REDIRECT_URI"),
+            realm_id=realm_id or os.getenv("CPAPACKET_QBO_REALM_ID"),
+        )
+    )
 
 
 def build_run_context(
@@ -170,6 +191,65 @@ def context_debug(ctx: click.Context) -> None:
     """Print resolved RunContext as JSON for debugging."""
     run_context = ctx.obj["run_context"]
     click.echo(run_context.model_dump_json(indent=2))
+
+
+@cli.group("auth")
+def auth_group() -> None:
+    """Authentication commands for external providers."""
+
+
+@auth_group.group("qbo")
+def auth_qbo_group() -> None:
+    """QuickBooks Online OAuth commands."""
+
+
+@auth_qbo_group.command("login")
+@click.option("--state", type=str, default=None, help="OAuth state override.")
+@click.option("--code", type=str, default=None, help="Authorization code from OAuth callback.")
+@click.option("--code-verifier", type=str, default=None, help="PKCE code verifier.")
+@click.option("--realm-id", type=str, default=None, help="QBO realm/company ID.")
+def auth_qbo_login(
+    state: str | None,
+    code: str | None,
+    code_verifier: str | None,
+    realm_id: str | None,
+) -> None:
+    """Start QBO login or exchange an auth code for a token."""
+    client = _build_qbo_client(realm_id=realm_id)
+    if code:
+        if not code_verifier:
+            raise click.ClickException("--code-verifier is required when --code is provided.")
+        token = client.exchange_code_for_token(code=code, code_verifier=code_verifier)
+        click.echo(
+            f"QBO token saved. Expires at {token.expires_at.isoformat()}."
+        )
+        return
+
+    oauth_state = state or secrets.token_urlsafe(16)
+    auth_url, verifier = client.authorization_url(state=oauth_state)
+    click.echo(f"Open this URL in your browser:\n{auth_url}")
+    click.echo(f"Use this code verifier for token exchange:\n{verifier}")
+    click.echo("After callback, run:")
+    click.echo("cpapacket auth qbo login --code <AUTH_CODE> --code-verifier <VERIFIER>")
+
+
+@auth_qbo_group.command("status")
+def auth_qbo_status() -> None:
+    """Show whether a QBO token is currently stored."""
+    token = OAuthTokenStore("qbo").load_token()
+    if token is None:
+        click.echo("QBO status: not authenticated")
+        return
+    state = "expired" if token.is_expired() else "active"
+    click.echo(f"QBO status: authenticated ({state})")
+    click.echo(f"Token expiry: {token.expires_at.isoformat()}")
+
+
+@auth_qbo_group.command("logout")
+def auth_qbo_logout() -> None:
+    """Clear stored QBO token."""
+    OAuthTokenStore("qbo").clear_token()
+    click.echo("QBO token cleared.")
 
 
 def main(argv: list[str] | None = None) -> Any:

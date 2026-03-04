@@ -201,3 +201,60 @@ def test_build_run_context_sets_gusto_available_false_on_detection_error(
     )
 
     assert ctx.gusto_available is False
+
+
+def test_auth_qbo_login_prints_authorization_url_and_verifier(monkeypatch) -> None:
+    class _FakeQboClient:
+        def authorization_url(self, *, state: str) -> tuple[str, str]:
+            assert state == "state-123"
+            return "https://example.test/oauth", "verifier-abc"
+
+    monkeypatch.setitem(
+        build_run_context.__globals__,
+        "_build_qbo_client",
+        lambda realm_id=None: _FakeQboClient(),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["auth", "qbo", "login", "--state", "state-123"])
+
+    assert result.exit_code == 0
+    assert "https://example.test/oauth" in result.output
+    assert "verifier-abc" in result.output
+
+
+def test_auth_qbo_status_reports_missing_token(monkeypatch) -> None:
+    class _StoreWithoutToken:
+        def __init__(self, provider_name: str) -> None:
+            assert provider_name == "qbo"
+
+        def load_token(self) -> None:
+            return None
+
+    monkeypatch.setitem(build_run_context.__globals__, "OAuthTokenStore", _StoreWithoutToken)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["auth", "qbo", "status"])
+
+    assert result.exit_code == 0
+    assert "not authenticated" in result.output
+
+
+def test_auth_qbo_logout_clears_token(monkeypatch) -> None:
+    cleared = {"called": False}
+
+    class _Store:
+        def __init__(self, provider_name: str) -> None:
+            assert provider_name == "qbo"
+
+        def clear_token(self) -> None:
+            cleared["called"] = True
+
+    monkeypatch.setitem(build_run_context.__globals__, "OAuthTokenStore", _Store)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["auth", "qbo", "logout"])
+
+    assert result.exit_code == 0
+    assert "token cleared" in result.output.lower()
+    assert cleared["called"] is True
