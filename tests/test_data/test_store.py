@@ -208,6 +208,90 @@ def test_integrity_mismatch_quarantines_and_refetches(tmp_path: Path) -> None:
     assert quarantine_files, "expected quarantine marker file"
 
 
+def test_get_or_fetch_force_bypasses_memory_cache() -> None:
+    store = SessionDataStore()
+    store.set("force-key", {"value": 1})
+    calls = 0
+
+    def fetcher() -> dict[str, int]:
+        nonlocal calls
+        calls += 1
+        return {"value": 2}
+
+    value, source = store.get_or_fetch("force-key", fetcher, force=True)
+
+    assert source == "api"
+    assert value == {"value": 2}
+    assert calls == 1
+    assert store.get("force-key") == {"value": 2}
+
+
+def test_get_or_fetch_force_bypasses_disk_cache_and_replaces_cached_value(tmp_path: Path) -> None:
+    cache_dir = tmp_path / "_meta" / "private" / "cache"
+    seed = SessionDataStore(cache_dir=cache_dir)
+    seed.set("force-disk-key", {"value": 1})
+
+    store = SessionDataStore(cache_dir=cache_dir)
+    calls = 0
+
+    def fetcher() -> dict[str, int]:
+        nonlocal calls
+        calls += 1
+        return {"value": 2}
+
+    value, source = store.get_or_fetch("force-disk-key", fetcher, force=True)
+    assert source == "api"
+    assert value == {"value": 2}
+    assert calls == 1
+
+    reloaded = SessionDataStore(cache_dir=cache_dir)
+    assert reloaded.get("force-disk-key") == {"value": 2}
+
+
+def test_no_cache_keeps_memory_cache_but_skips_disk_persistence(tmp_path: Path) -> None:
+    cache_dir = tmp_path / "_meta" / "private" / "cache"
+    store = SessionDataStore(cache_dir=cache_dir)
+    calls = 0
+
+    def fetcher() -> dict[str, int]:
+        nonlocal calls
+        calls += 1
+        return {"value": 7}
+
+    first, first_source = store.get_or_fetch("nocache-key", fetcher, no_cache=True)
+    second, second_source = store.get_or_fetch("nocache-key", fetcher)
+
+    assert first == {"value": 7}
+    assert first_source == "api"
+    assert second == {"value": 7}
+    assert second_source == "cache"
+    assert calls == 1
+    assert not (cache_dir / "nocache-key.json.gz").exists()
+    assert not (cache_dir / "nocache-key.meta.json").exists()
+
+
+def test_normal_mode_uses_disk_cache_across_store_instances(tmp_path: Path) -> None:
+    cache_dir = tmp_path / "_meta" / "private" / "cache"
+    initial = SessionDataStore(cache_dir=cache_dir)
+    first, first_source = initial.get_or_fetch("disk-key", lambda: {"value": 3})
+    assert first_source == "api"
+    assert first == {"value": 3}
+
+    calls = 0
+
+    def should_not_run() -> dict[str, int]:
+        nonlocal calls
+        calls += 1
+        return {"value": 99}
+
+    reloaded = SessionDataStore(cache_dir=cache_dir)
+    second, second_source = reloaded.get_or_fetch("disk-key", should_not_run)
+
+    assert second_source == "cache"
+    assert second == {"value": 3}
+    assert calls == 0
+
+
 def test_get_or_fetch_force_bypasses_memory_and_disk_cache(tmp_path: Path) -> None:
     cache_dir = tmp_path / "_meta" / "private" / "cache"
     seeded = SessionDataStore(cache_dir=cache_dir)
