@@ -113,7 +113,7 @@ def _render_doctor_results(summary: DoctorCommandSummary) -> None:
 def register_doctor_command(cli_group: click.Group) -> None:
     """Add `cpapacket doctor` command to the provided click group."""
 
-    @cli_group.command("doctor")  # type: ignore[untyped-decorator]
+    @cli_group.command("doctor")  # type: ignore[misc]
     def doctor_command() -> None:
         """Run environment and auth health checks."""
         summary = _run_doctor_checks()
