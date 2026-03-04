@@ -1,0 +1,225 @@
+{
+  "Header": {
+    "ReportName": "ProfitAndLoss",
+    "StartPeriod": "2025-01-01",
+    "EndPeriod": "2025-12-31"
+  },
+  "Rows": {
+    "Row": [
+      {
+        "Header": {
+          "ColData": [
+            {
+              "value": "Income"
+            },
+            {
+              "value": "30000.00"
+            }
+          ]
+        },
+        "Rows": {
+          "Row": [
+            {
+              "ColData": [
+                {
+                  "value": "Product Revenue"
+                },
+                {
+                  "value": "18000.00"
+                }
+              ]
+            },
+            {
+              "ColData": [
+                {
+                  "value": "Service Revenue"
+                },
+                {
+                  "value": "12000.00"
+                }
+              ]
+            },
+            {
+              "Summary": {
+                "ColData": [
+                  {
+                    "value": "Income Total"
+                  },
+                  {
+                    "value": "30000.00"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "Summary": {
+          "ColData": [
+            {
+              "value": "Income Net"
+            },
+            {
+              "value": "30000.00"
+            }
+          ]
+        }
+      },
+      {
+        "Header": {
+          "ColData": [
+            {
+              "value": "Cost of Goods Sold"
+            },
+            {
+              "value": "(8000.00)"
+            }
+          ]
+        },
+        "Rows": {
+          "Row": [
+            {
+              "ColData": [
+                {
+                  "value": "Materials"
+                },
+                {
+                  "value": "5000.00"
+                }
+              ]
+            },
+            {
+              "ColData": [
+                {
+                  "value": "Subcontractors"
+                },
+                {
+                  "value": "3000.00"
+                }
+              ]
+            },
+            {
+              "Summary": {
+                "ColData": [
+                  {
+                    "value": "Total COGS"
+                  },
+                  {
+                    "value": "(8000.00)"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "Header": {
+          "ColData": [
+            {
+              "value": "Expenses"
+            },
+            {
+              "value": "(15000.00)"
+            }
+          ]
+        },
+        "Rows": {
+          "Row": [
+            {
+              "ColData": [
+                {
+                  "value": "Salaries"
+                },
+                {
+                  "value": "7000.00"
+                }
+              ]
+            },
+            {
+              "ColData": [
+                {
+                  "value": "Office Rent"
+                },
+                {
+                  "value": "3000.00"
+                }
+              ]
+            },
+            {
+              "Summary": {
+                "ColData": [
+                  {
+                    "value": "Total Expenses"
+                  },
+                  {
+                    "value": "(15000.00)"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      {
+        "Header": {
+          "ColData": [
+            {
+              "value": "Other Income"
+            },
+            {
+              "value": "2000.00"
+            }
+          ]
+        },
+        "Rows": {
+          "Row": [
+            {
+              "ColData": [
+                {
+                  "value": "Interest Income"
+                },
+                {
+                  "value": "1500.00"
+                }
+              ]
+            },
+            {
+              "Summary": {
+                "ColData": [
+                  {
+                    "value": "Other Income Total"
+                  },
+                  {
+                    "value": "1500.00"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "Summary": {
+          "ColData": [
+            {
+              "value": "Total Other Income"
+            },
+            {
+              "value": "1500.00"
+            }
+          ]
+        }
+      },
+      {
+        "Summary": {
+          "ColData": [
+            {
+              "value": "Net Profit"
+            },
+            {
+              "value": "10000.00"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}
