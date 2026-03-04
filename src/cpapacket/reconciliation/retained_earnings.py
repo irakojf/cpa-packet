@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import InvalidOperation, ROUND_HALF_UP, Decimal
 from pathlib import Path
 
 from cpapacket.core.filesystem import atomic_write, ensure_directory
@@ -21,6 +21,22 @@ class ReMiscodingIntegrationResult:
     candidates: list[MiscodedDistributionCandidate]
     csv_path: Path
     wrote_csv: bool
+
+
+def extract_net_income_from_pnl_report(report_payload: dict[str, object]) -> Decimal:
+    """Extract bottom-line net income/loss from QBO P&L report payload."""
+    rows_node = report_payload.get("Rows")
+    if not isinstance(rows_node, dict):
+        return Decimal("0.00")
+
+    rows = rows_node.get("Row")
+    if not isinstance(rows, list):
+        return Decimal("0.00")
+
+    extracted = _search_net_income_value(rows)
+    if extracted is None:
+        return Decimal("0.00")
+    return extracted.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
 def extract_distribution_total(gl_rows: list[GeneralLedgerRow]) -> Decimal:
@@ -124,3 +140,61 @@ def _has_direct_retained_earnings_posting(gl_rows: list[GeneralLedgerRow]) -> bo
         if "retained earnings" in account_name:
             return True
     return False
+
+
+def _search_net_income_value(rows: list[object]) -> Decimal | None:
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        for container_key in ("Summary", "Header"):
+            container = row.get(container_key)
+            value = _extract_net_income_from_coldata(container)
+            if value is not None:
+                return value
+
+        value = _extract_net_income_from_coldata(row)
+        if value is not None:
+            return value
+
+        nested_rows = row.get("Rows")
+        if isinstance(nested_rows, dict):
+            child_rows = nested_rows.get("Row")
+            if isinstance(child_rows, list):
+                nested_value = _search_net_income_value(child_rows)
+                if nested_value is not None:
+                    return nested_value
+    return None
+
+
+def _extract_net_income_from_coldata(node: object) -> Decimal | None:
+    if not isinstance(node, dict):
+        return None
+    col_data = node.get("ColData")
+    if not isinstance(col_data, list) or len(col_data) < 2:
+        return None
+
+    label_raw = col_data[0]
+    value_raw = col_data[1]
+    if not isinstance(label_raw, dict) or not isinstance(value_raw, dict):
+        return None
+
+    label = str(label_raw.get("value", "")).strip().lower()
+    if not ("net income" in label or "net loss" in label):
+        return None
+
+    return _parse_decimal_amount(str(value_raw.get("value", "")).strip())
+
+
+def _parse_decimal_amount(raw: str) -> Decimal:
+    if raw == "":
+        return Decimal("0.00")
+    cleaned = raw.replace(",", "").replace("$", "")
+    negative = cleaned.startswith("(") and cleaned.endswith(")")
+    if negative:
+        cleaned = cleaned[1:-1]
+    try:
+        amount = Decimal(cleaned)
+    except (InvalidOperation, ValueError):
+        return Decimal("0.00")
+    return -amount if negative else amount

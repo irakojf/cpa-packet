@@ -9,6 +9,7 @@ from cpapacket.models.general_ledger import GeneralLedgerRow
 from cpapacket.reconciliation.retained_earnings import (
     evaluate_re_structural_flags,
     extract_distribution_total,
+    extract_net_income_from_pnl_report,
     integrate_miscoded_distributions,
 )
 
@@ -179,3 +180,42 @@ def test_extract_distribution_total_from_equity_distribution_rows() -> None:
     ]
 
     assert extract_distribution_total(rows) == Decimal("1200.00")
+
+
+def test_extract_net_income_from_pnl_report_handles_income_and_loss() -> None:
+    income_payload: dict[str, object] = {
+        "Rows": {
+            "Row": [
+                {
+                    "Summary": {
+                        "ColData": [
+                            {"value": "Net Income"},
+                            {"value": "1,234.50"},
+                        ]
+                    }
+                }
+            ]
+        }
+    }
+    loss_payload: dict[str, object] = {
+        "Rows": {
+            "Row": [
+                {
+                    "Summary": {
+                        "ColData": [
+                            {"value": "Net Loss"},
+                            {"value": "(321.00)"},
+                        ]
+                    }
+                }
+            ]
+        }
+    }
+
+    assert extract_net_income_from_pnl_report(income_payload) == Decimal("1234.50")
+    assert extract_net_income_from_pnl_report(loss_payload) == Decimal("-321.00")
+
+
+def test_extract_net_income_from_pnl_report_defaults_to_zero_when_missing() -> None:
+    assert extract_net_income_from_pnl_report({}) == Decimal("0.00")
+    assert extract_net_income_from_pnl_report({"Rows": {"Row": []}}) == Decimal("0.00")
