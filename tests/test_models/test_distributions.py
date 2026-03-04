@@ -63,3 +63,47 @@ def test_miscoded_distribution_candidate_validation_guards() -> None:
             confidence="Low",
             score=1,
         )
+
+    with pytest.raises(ValidationError):
+        MiscodedDistributionCandidate(
+            txn_id="TXN-4",
+            date=date(2025, 1, 1),
+            transaction_type="Expense",
+            account="Expense",
+            amount="1",
+            reason_codes=["R1"],
+            confidence="Low",
+            score=-1,
+        )
+
+
+def test_miscoded_distribution_candidate_accepts_all_confidence_levels() -> None:
+    for confidence in ("Low", "Medium", "High"):
+        candidate = MiscodedDistributionCandidate(
+            txn_id=f"TXN-{confidence}",
+            date=date(2025, 1, 1),
+            transaction_type="Expense",
+            account="Expense",
+            amount="10",
+            reason_codes=[" R1 ", "R2"],
+            confidence=confidence,
+            score=1,
+        )
+        assert candidate.confidence == confidence
+        assert candidate.reason_codes == ["R1", "R2"]
+
+
+def test_miscoded_distribution_candidate_is_frozen() -> None:
+    candidate = MiscodedDistributionCandidate(
+        txn_id="TXN-FROZEN",
+        date=date(2025, 1, 1),
+        transaction_type="Expense",
+        account="Expense",
+        amount="10",
+        reason_codes=["R1"],
+        confidence="Low",
+        score=1,
+    )
+
+    with pytest.raises(ValidationError):
+        candidate.score = 2  # type: ignore[misc]
