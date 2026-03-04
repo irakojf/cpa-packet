@@ -99,6 +99,43 @@ def test_get_or_fetch_does_not_cache_failures() -> None:
     assert calls == 2
 
 
+def test_get_or_fetch_allows_parallel_work_for_different_keys() -> None:
+    store = SessionDataStore()
+    calls = {"left": 0, "right": 0}
+    gate = threading.Event()
+    results: list[tuple[dict[str, int], str]] = []
+
+    def fetch_left() -> dict[str, int]:
+        calls["left"] += 1
+        gate.wait(timeout=2)
+        return {"value": 10}
+
+    def fetch_right() -> dict[str, int]:
+        calls["right"] += 1
+        gate.wait(timeout=2)
+        return {"value": 20}
+
+    def worker_left() -> None:
+        results.append(store.get_or_fetch("left-key", fetch_left))
+
+    def worker_right() -> None:
+        results.append(store.get_or_fetch("right-key", fetch_right))
+
+    t1 = threading.Thread(target=worker_left)
+    t2 = threading.Thread(target=worker_right)
+    t1.start()
+    t2.start()
+    time.sleep(0.05)
+    gate.set()
+    t1.join(timeout=2)
+    t2.join(timeout=2)
+
+    assert calls == {"left": 1, "right": 1}
+    assert len(results) == 2
+    assert sorted(source for _, source in results) == ["api", "api"]
+    assert sorted(value["value"] for value, _ in results) == [10, 20]
+
+
 def test_set_writes_gzip_payload_and_meta(tmp_path: Path) -> None:
     cache_dir = tmp_path / "_meta" / "private" / "cache"
     store = SessionDataStore(cache_dir=cache_dir)

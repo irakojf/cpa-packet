@@ -36,6 +36,7 @@ class SessionDataStore:
     ) -> None:
         self._cache: dict[str, object] = {}
         self._inflight: dict[str, _InFlight[object]] = {}
+        self._key_locks: dict[str, Lock] = {}
         self._lock = Lock()
         self._ttl = timedelta(hours=ttl_hours)
         self._now = now_provider or (lambda: datetime.now(UTC))
@@ -52,18 +53,20 @@ class SessionDataStore:
 
     def get(self, cache_key: str) -> object | None:
         """Return cached payload for key, or None when absent."""
-        with self._lock:
-            cached = self._cache.get(cache_key)
-            if cached is not None:
-                return cached
+        key_lock = self._lock_for_key(cache_key)
+        with key_lock:
+            with self._lock:
+                cached = self._cache.get(cache_key)
+                if cached is not None:
+                    return cached
 
-        loaded = self._load_from_disk(cache_key)
-        if loaded is None:
-            return None
+            loaded = self._load_from_disk(cache_key)
+            if loaded is None:
+                return None
 
-        with self._lock:
-            self._cache.setdefault(cache_key, loaded)
-            return self._cache[cache_key]
+            with self._lock:
+                self._cache.setdefault(cache_key, loaded)
+                return self._cache[cache_key]
 
     def set(self, cache_key: str, payload: object) -> None:
         """Insert or overwrite payload for key."""
@@ -76,6 +79,7 @@ class SessionDataStore:
         with self._lock:
             self._cache.clear()
             self._inflight.clear()
+            self._key_locks.clear()
 
     def get_or_fetch(self, cache_key: str, fetcher: Callable[[], T]) -> tuple[T, str]:
         """Get cached payload, otherwise fetch exactly once per key across threads.
@@ -86,7 +90,8 @@ class SessionDataStore:
         if cached is not None:
             return cast(T, cached), "cache"
 
-        with self._lock:
+        key_lock = self._lock_for_key(cache_key)
+        with key_lock, self._lock:
             cached = self._cache.get(cache_key)
             if cached is not None:
                 return cast(T, cached), "cache"
@@ -124,6 +129,14 @@ class SessionDataStore:
             if cached is None:
                 raise RuntimeError(f"cache entry missing after inflight completion: {cache_key}")
             return cast(T, cached), "cache"
+
+    def _lock_for_key(self, cache_key: str) -> Lock:
+        with self._lock:
+            key_lock = self._key_locks.get(cache_key)
+            if key_lock is None:
+                key_lock = Lock()
+                self._key_locks[cache_key] = key_lock
+            return key_lock
 
     def _warm_memory_cache_from_disk(self) -> None:
         cache_dir = self._cache_dir
