@@ -114,3 +114,28 @@ def test_normalized_row_is_frozen() -> None:
 
     with pytest.raises(ValidationError):
         row.level = 2
+
+
+def test_normalized_row_quantizes_amount_to_two_decimals_half_up() -> None:
+    row = NormalizedRow(
+        section="Expenses",
+        label="Bank Fees",
+        amount="-1.235",
+        row_type="account",
+        level=0,
+        path="Expenses:Bank Fees",
+    )
+
+    assert row.amount == Decimal("-1.24")
+
+
+def test_normalized_row_rejects_invalid_decimal_literal() -> None:
+    with pytest.raises(ValidationError):
+        NormalizedRow(
+            section="Income",
+            label="Revenue",
+            amount="not-a-number",
+            row_type="account",
+            level=0,
+            path="Income:Revenue",
+        )
