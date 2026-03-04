@@ -16,7 +16,7 @@ from cpapacket.models.normalized import NormalizedRow
 from cpapacket.utils.constants import DELIVERABLE_FOLDERS, SCHEMA_VERSIONS
 from cpapacket.utils.prompts import resolve_output_path
 from cpapacket.writers.csv_writer import CsvWriter
-from cpapacket.writers.pdf_writer import PdfWriter
+from cpapacket.writers.pdf_writer import PdfBodyLine, PdfWriter
 
 _DEFAULT_SECTION = "Uncategorized"
 _RowType = Literal["header", "account", "subtotal", "total"]
@@ -347,7 +347,12 @@ def _write_pdf(
 ) -> None:
     writer = PdfWriter()
     body_lines = [
-        f"{'  ' * row.level}{row.label} [{row.row_type}] {row.amount:.2f}" for row in rows
+        PdfBodyLine(
+            text=f"{row.label}  {row.amount:.2f}",
+            level=row.level,
+            row_type=row.row_type,
+        )
+        for row in rows
     ]
     writer.write_report(
         path,

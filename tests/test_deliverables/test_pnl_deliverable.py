@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 from pathlib import Path
 from typing import Literal
 
 import pytest
 
 from cpapacket.core.context import RunContext
-from cpapacket.deliverables.pnl import PnlDeliverable
+from cpapacket.deliverables.pnl import PnlDeliverable, _write_pdf
+from cpapacket.models.normalized import NormalizedRow
+from cpapacket.writers.pdf_writer import PdfBodyLine
 
 
 def _sample_report_payload() -> dict[str, object]:
@@ -294,3 +297,76 @@ def test_pnl_deliverable_honors_copy_conflict_mode(
 
     copied = [Path(path) for path in result.artifacts if "__copy_" in path]
     assert copied, "expected copy-mode artifacts with __copy_ suffix"
+
+
+def test_write_pdf_uses_structured_body_lines(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_write_report(
+        self: object,
+        output_path: str | Path,
+        *,
+        company_name: str,
+        report_title: str,
+        date_range_label: str,
+        body_lines: list[PdfBodyLine],
+    ) -> Path:
+        captured["company_name"] = company_name
+        captured["report_title"] = report_title
+        captured["date_range_label"] = date_range_label
+        captured["body_lines"] = body_lines
+        destination = Path(output_path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"%PDF-1.4\n")
+        return destination
+
+    monkeypatch.setattr(
+        "cpapacket.deliverables.pnl.PdfWriter.write_report",
+        fake_write_report,
+    )
+
+    rows = [
+        NormalizedRow(
+            section="Income",
+            label="Income",
+            amount=Decimal("1000.00"),
+            row_type="header",
+            level=0,
+            path="Income",
+        ),
+        NormalizedRow(
+            section="Income",
+            label="Service Revenue",
+            amount=Decimal("1000.00"),
+            row_type="account",
+            level=1,
+            path="Income > Service Revenue",
+        ),
+        NormalizedRow(
+            section="Income",
+            label="Total Income",
+            amount=Decimal("1000.00"),
+            row_type="total",
+            level=0,
+            path="Income > Total Income",
+        ),
+    ]
+
+    output_path = tmp_path / "report.pdf"
+    _write_pdf(
+        output_path,
+        rows,
+        company_name="Acme LLC",
+        date_range_label="2025-01-01 to 2025-12-31 (accrual basis)",
+    )
+
+    assert output_path.exists()
+    assert captured["company_name"] == "Acme LLC"
+    assert captured["report_title"] == "Profit and Loss"
+    assert captured["date_range_label"] == "2025-01-01 to 2025-12-31 (accrual basis)"
+    lines = captured["body_lines"]
+    assert isinstance(lines, list)
+    assert [line.row_type for line in lines] == ["header", "account", "total"]
+    assert [line.level for line in lines] == [0, 1, 0]
