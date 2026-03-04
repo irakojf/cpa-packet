@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from hashlib import sha256
 from typing import Any, Protocol
+
+from cpapacket.deliverables.general_ledger_normalizer import normalize_general_ledger_report
+from cpapacket.models.general_ledger import GeneralLedgerRow
 
 
 class GeneralLedgerMonthProvider(Protocol):
@@ -40,6 +44,36 @@ class GeneralLedgerSliceError(RuntimeError):
         self.failed_month = failed_month
         self.completed_slices = completed_slices
         self.cause = cause
+
+
+def merge_general_ledger_monthly_slices(
+    slices: tuple[GeneralLedgerMonthlySlice, ...],
+    *,
+    normalizer: Callable[
+        [dict[str, Any]], list[GeneralLedgerRow]
+    ] = normalize_general_ledger_report,
+) -> tuple[GeneralLedgerRow, ...]:
+    """Merge monthly slices in month order and deduplicate rows.
+
+    Deduplication key preference:
+    1. ``txn_id`` when present.
+    2. Composite hash of stable transaction fields when ``txn_id`` is blank.
+
+    The first occurrence wins, so if the same transaction appears in adjacent
+    months (date-window overlap), the earliest month slice is preserved.
+    """
+    merged: list[GeneralLedgerRow] = []
+    seen_keys: set[str] = set()
+
+    for slice_ in sorted(slices, key=lambda item: item.month):
+        for row in normalizer(slice_.payload):
+            key = _dedupe_key_for_row(row)
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            merged.append(row)
+
+    return tuple(merged)
 
 
 def fetch_general_ledger_monthly_slices(
@@ -79,3 +113,23 @@ def fetch_general_ledger_monthly_slices(
             progress_callback(month)
 
     return tuple(completed)
+
+
+def _dedupe_key_for_row(row: GeneralLedgerRow) -> str:
+    txn_id = row.txn_id.strip()
+    if txn_id:
+        return f"txn:{txn_id}"
+
+    signature = "|".join(
+        (
+            row.date.isoformat(),
+            row.transaction_type.strip(),
+            row.document_number.strip(),
+            row.account_name.strip(),
+            format(row.debit, "f"),
+            format(row.credit, "f"),
+            (row.payee or "").strip(),
+            (row.memo or "").strip(),
+        )
+    )
+    return f"composite:{sha256(signature.encode('utf-8')).hexdigest()}"

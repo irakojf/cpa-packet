@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 
 from cpapacket.models.normalized import NormalizedRow
+from cpapacket.utils.constants import BALANCE_EQUATION_TOLERANCE
 
 _SECTION_BY_KEY = {
     "assets": "Assets",
@@ -26,6 +28,44 @@ def normalize_balance_sheet_rows(report_payload: Mapping[str, Any]) -> list[Norm
     output: list[NormalizedRow] = []
     _walk_rows(rows=rows, section=None, path_parts=[], level=0, out=output)
     return output
+
+
+@dataclass(frozen=True)
+class BalanceEquationCheck:
+    assets: Decimal
+    liabilities: Decimal
+    equity: Decimal
+    difference: Decimal
+    balanced: bool
+    warning: str | None
+
+
+def validate_balance_equation(rows: Sequence[NormalizedRow]) -> BalanceEquationCheck:
+    """Validate Assets = Liabilities + Equity within configured tolerance."""
+    assets = _extract_section_total(rows=rows, section="Assets")
+    liabilities = _extract_section_total(rows=rows, section="Liabilities")
+    equity = _extract_section_total(rows=rows, section="Equity")
+
+    difference = assets - (liabilities + equity)
+    balanced = abs(difference) <= BALANCE_EQUATION_TOLERANCE
+    warning = (
+        None
+        if balanced
+        else (
+            "Balance equation mismatch: "
+            f"Assets={assets}, Liabilities+Equity={liabilities + equity}, "
+            f"difference={difference}, tolerance={BALANCE_EQUATION_TOLERANCE}."
+        )
+    )
+
+    return BalanceEquationCheck(
+        assets=assets,
+        liabilities=liabilities,
+        equity=equity,
+        difference=difference,
+        balanced=balanced,
+        warning=warning,
+    )
 
 
 def _walk_rows(
@@ -174,3 +214,29 @@ def _classify_summary(label: str) -> _RowType:
     if lower.startswith("total "):
         return "total"
     return "subtotal"
+
+
+def _extract_section_total(*, rows: Sequence[NormalizedRow], section: str) -> Decimal:
+    section_totals: list[Decimal] = []
+    for row in rows:
+        if row.section != section or row.row_type != "total":
+            continue
+        if not row.label.lower().startswith("total "):
+            continue
+        section_totals.append(_coerce_decimal(row.amount))
+
+    if section_totals:
+        return section_totals[-1]
+
+    total = Decimal("0")
+    for row in rows:
+        if row.section == section and row.row_type == "account":
+            total += _coerce_decimal(row.amount)
+    return total
+
+
+def _coerce_decimal(value: object) -> Decimal:
+    try:
+        return value if isinstance(value, Decimal) else Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        return Decimal("0")

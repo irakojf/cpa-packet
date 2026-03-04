@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+import os
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from typing import cast
 
 from click.testing import CliRunner
 
 from cpapacket.cli import pnl as pnl_cli
 from cpapacket.cli.main import build_run_context, cli
 from cpapacket.clients.auth import OAuthToken
+from cpapacket.core.context import RunContext
 from cpapacket.deliverables.base import DeliverableResult
 
 
@@ -203,6 +206,72 @@ def test_build_run_context_sets_gusto_available_false_on_detection_error(
     )
 
     assert ctx.gusto_available is False
+
+
+def test_cli_pnl_requires_qbo_env() -> None:
+    runner = CliRunner()
+    env = {k: v for k, v in os.environ.items() if not k.startswith("CPAPACKET_")}
+
+    result = runner.invoke(cli, ["pnl"], env=env)
+
+    assert result.exit_code == 1
+    assert "Missing required environment variable: CPAPACKET_QBO_CLIENT_ID" in result.output
+
+
+def test_context_debug_infers_year_from_packet_directory(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    runner = CliRunner()
+    packet_dir = tmp_path / "Acme_2024_CPA_Packet"
+    packet_dir.mkdir()
+    monkeypatch.chdir(packet_dir)
+
+    result = runner.invoke(cli, ["context-debug"])
+
+    assert result.exit_code == 0
+    assert '"year": 2024' in result.output
+    assert '"year_source": "inferred"' in result.output
+
+
+def test_context_debug_default_year_before_october(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    class _FakeDate(date):
+        @classmethod
+        def today(cls) -> date:
+            return cls(2026, 9, 1)
+
+    monkeypatch.setattr("cpapacket.core.context.date", _FakeDate)
+    runner = CliRunner()
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli, ["context-debug"])
+
+    assert result.exit_code == 0
+    assert '"year": 2025' in result.output
+    assert '"year_source": "default"' in result.output
+
+
+def test_context_debug_default_year_october_and_later(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    class _FakeDate(date):
+        @classmethod
+        def today(cls) -> date:
+            return cls(2026, 10, 1)
+
+    monkeypatch.setattr("cpapacket.core.context.date", _FakeDate)
+    runner = CliRunner()
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli, ["context-debug"])
+
+    assert result.exit_code == 0
+    assert '"year": 2026' in result.output
+    assert '"year_source": "default"' in result.output
 
 
 def test_auth_qbo_login_prints_authorization_url_and_verifier(monkeypatch) -> None:
@@ -423,6 +492,45 @@ def test_pnl_command_surfaces_deliverable_errors(monkeypatch) -> None:
 
     assert result.exit_code != 0
     assert "QBO token missing" in result.output
+
+
+def test_pnl_command_uses_cash_method_when_flag_is_set(monkeypatch) -> None:
+    class _FakeStore:
+        def __init__(self, *, cache_dir: Path) -> None:
+            self.cache_dir = cache_dir
+
+    class _FakeProviders:
+        def __init__(self, *, store: _FakeStore, qbo_client: object) -> None:
+            self.store = store
+            self.qbo_client = qbo_client
+
+    class _CashAwareDeliverable:
+        def generate(
+            self,
+            _ctx: object,
+            _store: object,
+            prompts: dict[str, object],
+        ) -> DeliverableResult:
+            assert prompts == {}
+            ctx = cast(RunContext, _ctx)
+            assert ctx.method == "cash"
+            return DeliverableResult(
+                deliverable_key="pnl",
+                success=True,
+                artifacts=["/tmp/packet/Profit_and_Loss_2025.csv"],
+            )
+
+    monkeypatch.setattr(pnl_cli, "SessionDataStore", _FakeStore)
+    monkeypatch.setattr(pnl_cli, "DataProviders", _FakeProviders)
+    monkeypatch.setattr(pnl_cli, "PnlDeliverable", lambda: _CashAwareDeliverable())
+    monkeypatch.setattr(pnl_cli, "_build_qbo_client", lambda: object())
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["--year", "2025", "--method", "cash", "pnl"])
+
+    assert result.exit_code == 0
+    assert "P&L deliverable complete." in result.output
+    assert "/tmp/packet/Profit_and_Loss_2025.csv" in result.output
 
 
 def test_auth_gusto_status_reports_active_and_expired(monkeypatch) -> None:
