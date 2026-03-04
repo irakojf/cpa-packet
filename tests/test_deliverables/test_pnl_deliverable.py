@@ -39,7 +39,9 @@ def _sample_report_payload() -> dict[str, object]:
     }
 
 
-def test_pnl_deliverable_generates_artifacts_and_metadata(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_pnl_deliverable_generates_artifacts_and_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     def fake_write_pdf(path: Path, rows: list[object], year: int) -> None:
         path.write_bytes(b"%PDF-1.4\n% fake test pdf\n")
 
@@ -56,7 +58,11 @@ def test_pnl_deliverable_generates_artifacts_and_metadata(tmp_path: Path, monkey
     assert result.deliverable_key == "pnl"
     assert len(result.artifacts) == 3
 
-    csv_path = tmp_path / "01_Year-End_Profit_and_Loss" / "Profit_and_Loss_2025.csv"
+    csv_path = (
+        tmp_path
+        / "01_Year-End_Profit_and_Loss"
+        / "Profit_and_Loss_2025-01-01_to_2025-12-31_accrual.csv"
+    )
     pdf_path = tmp_path / "01_Year-End_Profit_and_Loss" / "Profit_and_Loss_2025.pdf"
     raw_path = tmp_path / "01_Year-End_Profit_and_Loss" / "Profit_and_Loss_2025_raw.json"
     meta_path = tmp_path / "_meta" / "pnl_metadata.json"
@@ -72,9 +78,13 @@ def test_pnl_deliverable_generates_artifacts_and_metadata(tmp_path: Path, monkey
     assert len(metadata["input_fingerprint"]) == 64
     assert metadata["schema_versions"] == {"csv": "1.0"}
     assert str(csv_path) in metadata["artifacts"]
+    header = csv_path.read_text(encoding="utf-8").splitlines()[0]
+    assert header == "section,level,row_type,label,amount,path"
 
 
-def test_pnl_deliverable_honors_abort_conflict_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_pnl_deliverable_honors_abort_conflict_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     def fake_write_pdf(path: Path, rows: list[object], year: int) -> None:
         path.write_bytes(b"%PDF-1.4\n")
 
@@ -92,7 +102,9 @@ def test_pnl_deliverable_honors_abort_conflict_mode(tmp_path: Path, monkeypatch:
         )
 
 
-def test_pnl_deliverable_honors_copy_conflict_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_pnl_deliverable_honors_copy_conflict_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     def fake_write_pdf(path: Path, rows: list[object], year: int) -> None:
         path.write_bytes(b"%PDF-1.4\n")
 

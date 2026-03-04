@@ -2,18 +2,19 @@
 
 from __future__ import annotations
 
-import csv
 import hashlib
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from time import gmtime, strftime
-from typing import Any, Mapping
+from typing import Any
 
 from cpapacket.models.normalized import NormalizedRow
 from cpapacket.utils.constants import DELIVERABLE_FOLDERS, SCHEMA_VERSIONS
+from cpapacket.writers.csv_writer import CsvWriter
 
 _DEFAULT_SECTION = "Uncategorized"
 _SECTION_MAP = {
@@ -212,6 +213,7 @@ class PnlDeliverable:
         report_payload: Mapping[str, Any],
         output_root: Path,
         year: int,
+        method: str = "accrual",
         on_conflict: str = "abort",
         no_raw: bool = False,
     ) -> PnlDeliverableResult:
@@ -226,10 +228,17 @@ class PnlDeliverable:
         meta_dir = output_root / "_meta"
         meta_dir.mkdir(parents=True, exist_ok=True)
 
+        start_date = f"{year}-01-01"
+        end_date = f"{year}-12-31"
+        normalized_method = method.strip().lower() if method.strip() else "accrual"
+        csv_name = f"Profit_and_Loss_{start_date}_to_{end_date}_{normalized_method}"
         base_name = f"Profit_and_Loss_{year}"
-        csv_path = _resolve_output_path(deliverable_dir / f"{base_name}.csv", on_conflict)
+        csv_path = _resolve_output_path(deliverable_dir / f"{csv_name}.csv", on_conflict)
         pdf_path = _resolve_output_path(deliverable_dir / f"{base_name}.pdf", on_conflict)
-        json_path = None if no_raw else _resolve_output_path(deliverable_dir / f"{base_name}_raw.json", on_conflict)
+        json_path = (
+            None if no_raw
+            else _resolve_output_path(deliverable_dir / f"{base_name}_raw.json", on_conflict)
+        )
         metadata_path = _resolve_output_path(meta_dir / f"{self.key}_metadata.json", on_conflict)
 
         _write_csv(csv_path, rows)
@@ -246,7 +255,8 @@ class PnlDeliverable:
         return PnlDeliverableResult(
             deliverable_key=self.key,
             success=True,
-            artifacts=[str(csv_path), str(pdf_path)] + ([str(json_path)] if json_path is not None else []),
+            artifacts=[str(csv_path), str(pdf_path)]
+            + ([str(json_path)] if json_path is not None else []),
             warnings=warnings,
         )
 
@@ -265,23 +275,22 @@ def _resolve_output_path(path: Path, on_conflict: str) -> Path:
 
 
 def _write_csv(path: Path, rows: list[NormalizedRow]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with NamedTemporaryFile("w", delete=False, encoding="utf-8", newline="", dir=path.parent) as tmp_file:
-        writer = csv.writer(tmp_file)
-        writer.writerow(["section", "path", "label", "row_type", "level", "amount"])
-        for row in rows:
-            writer.writerow(
-                [
-                    row.section,
-                    row.path,
-                    row.label,
-                    row.row_type,
-                    row.level,
-                    f"{row.amount:.2f}",
-                ]
-            )
-        tmp_name = tmp_file.name
-    Path(tmp_name).replace(path)
+    writer = CsvWriter()
+    writer.write_rows(
+        path,
+        fieldnames=["section", "level", "row_type", "label", "amount", "path"],
+        rows=[
+            {
+                "section": row.section,
+                "level": row.level,
+                "row_type": row.row_type,
+                "label": row.label,
+                "amount": f"{row.amount:.2f}",
+                "path": row.path,
+            }
+            for row in rows
+        ],
+    )
 
 
 def _write_pdf(path: Path, rows: list[NormalizedRow], year: int) -> None:
