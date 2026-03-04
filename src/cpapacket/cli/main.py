@@ -10,6 +10,7 @@ from typing import Any, Literal, cast
 
 import click
 
+from cpapacket.cli.check import register_check_command
 from cpapacket.cli.doctor import register_doctor_command
 from cpapacket.cli.general_ledger import register_general_ledger_command
 from cpapacket.cli.pnl import register_pnl_command
@@ -96,9 +97,7 @@ def build_run_context(
         explicit_year=year,
         out_dir=out_dir,
     )
-    resolved_on_conflict: ConflictOption = on_conflict or (
-        "abort" if non_interactive else "prompt"
-    )
+    resolved_on_conflict: ConflictOption = on_conflict or ("abort" if non_interactive else "prompt")
 
     return RunContext(
         year=resolved_year,
@@ -202,9 +201,9 @@ def cli(
 
 register_pnl_command(cli)
 register_general_ledger_command(cli)
+register_check_command(cli)
 register_doctor_command(cli)
 register_privacy_command(cli)
-register_doctor_command(cli)
 
 
 @cli.command("context-debug")
@@ -242,9 +241,7 @@ def auth_qbo_login(
         if not code_verifier:
             raise click.ClickException("--code-verifier is required when --code is provided.")
         token = client.exchange_code_for_token(code=code, code_verifier=code_verifier)
-        click.echo(
-            f"QBO token saved. Expires at {token.expires_at.isoformat()}."
-        )
+        click.echo(f"QBO token saved. Expires at {token.expires_at.isoformat()}.")
         return
 
     oauth_state = state or secrets.token_urlsafe(16)
