@@ -62,6 +62,56 @@ def _sample_company_payload() -> dict[str, object]:
     return {"CompanyInfo": {"CompanyName": "Acme LLC"}}
 
 
+def _cross_year_long_name_payload() -> dict[str, object]:
+    long_label = (
+        "Consulting Revenue - Strategic Transformation and Multi-Region Advisory Services "
+        "for Enterprise Accounts"
+    )
+    return {
+        "Header": {
+            "ReportName": "ProfitAndLoss",
+            "StartPeriod": "2024-10-01",
+            "EndPeriod": "2025-03-31",
+        },
+        "Rows": {
+            "Row": [
+                {
+                    "Header": {"ColData": [{"value": "Income"}]},
+                    "Rows": {
+                        "Row": [
+                            {
+                                "ColData": [
+                                    {"value": long_label},
+                                    {"value": "2500.00"},
+                                ]
+                            },
+                            {
+                                "Summary": {
+                                    "ColData": [
+                                        {"value": "Total Income"},
+                                        {"value": "2500.00"},
+                                    ]
+                                }
+                            },
+                        ]
+                    },
+                }
+            ]
+        },
+    }
+
+
+def _empty_report_payload() -> dict[str, object]:
+    return {
+        "Header": {
+            "ReportName": "ProfitAndLoss",
+            "StartPeriod": "2025-01-01",
+            "EndPeriod": "2025-12-31",
+        },
+        "Rows": {"Row": []},
+    }
+
+
 class _StubStore:
     def __init__(
         self,
@@ -238,6 +288,51 @@ def test_pnl_deliverable_redacts_sensitive_raw_fields(
     assert raw_payload["Meta"]["public_value"] == "ok"
 
 
+def test_pnl_deliverable_empty_report_writes_zero_summary_and_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured_rows: list[NormalizedRow] = []
+
+    def fake_write_pdf(
+        path: Path,
+        rows: list[NormalizedRow],
+        *,
+        company_name: str,
+        date_range_label: str,
+    ) -> None:
+        del company_name, date_range_label
+        captured_rows.extend(rows)
+        path.write_bytes(b"%PDF-1.4\n% fake test pdf\n")
+
+    monkeypatch.setattr("cpapacket.deliverables.pnl._write_pdf", fake_write_pdf)
+
+    deliverable = PnlDeliverable()
+    store = _StubStore(
+        pnl_payload=_empty_report_payload(),
+        company_payload=_sample_company_payload(),
+    )
+    result = deliverable.generate(_ctx(tmp_path), store, prompts={})
+
+    assert result.success
+    assert result.warnings == ["P&L report normalized to zero rows."]
+
+    csv_path = (
+        tmp_path
+        / "01_Year-End_Profit_and_Loss"
+        / "Profit_and_Loss_2025-01-01_to_2025-12-31_accrual.csv"
+    )
+    csv_lines = csv_path.read_text(encoding="utf-8").splitlines()
+    assert csv_lines[-1].endswith(",total,No transactions found,0.00,No transactions found")
+
+    assert captured_rows
+    assert captured_rows[0].label == "No transactions found"
+    assert captured_rows[0].row_type == "total"
+    assert captured_rows[0].amount == Decimal("0")
+
+    metadata = json.loads((tmp_path / "_meta" / "pnl_metadata.json").read_text(encoding="utf-8"))
+    assert metadata["warnings"] == ["P&L report normalized to zero rows."]
+
+
 def test_pnl_deliverable_honors_abort_conflict_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -370,3 +465,43 @@ def test_write_pdf_uses_structured_body_lines(
     assert isinstance(lines, list)
     assert [line.row_type for line in lines] == ["header", "account", "total"]
     assert [line.level for line in lines] == [0, 1, 0]
+
+
+def test_pnl_deliverable_supports_cross_year_range_and_preserves_long_csv_labels(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    captured: dict[str, str] = {}
+
+    def fake_write_pdf(
+        path: Path,
+        rows: list[PdfBodyLine],
+        *,
+        company_name: str,
+        date_range_label: str,
+    ) -> None:
+        del rows, company_name
+        captured["date_range_label"] = date_range_label
+        path.write_bytes(b"%PDF-1.4\n% fake test pdf\n")
+
+    monkeypatch.setattr("cpapacket.deliverables.pnl._write_pdf", fake_write_pdf)
+
+    deliverable = PnlDeliverable()
+    store = _StubStore(
+        pnl_payload=_cross_year_long_name_payload(),
+        company_payload=_sample_company_payload(),
+    )
+    result = deliverable.generate(_ctx(tmp_path), store, prompts={})
+
+    assert result.success
+    csv_path = (
+        tmp_path
+        / "01_Year-End_Profit_and_Loss"
+        / "Profit_and_Loss_2024-10-01_to_2025-03-31_accrual.csv"
+    )
+    assert csv_path.exists()
+    csv_text = csv_path.read_text(encoding="utf-8")
+    assert (
+        "Consulting Revenue - Strategic Transformation and Multi-Region Advisory Services "
+        "for Enterprise Accounts"
+    ) in csv_text
+    assert captured["date_range_label"] == "2024-10-01 to 2025-03-31 (accrual basis)"
