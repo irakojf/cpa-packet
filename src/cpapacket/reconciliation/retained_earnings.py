@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
 from cpapacket.core.filesystem import atomic_write, ensure_directory
@@ -21,6 +21,20 @@ class ReMiscodingIntegrationResult:
     candidates: list[MiscodedDistributionCandidate]
     csv_path: Path
     wrote_csv: bool
+
+
+def extract_distribution_total(gl_rows: list[GeneralLedgerRow]) -> Decimal:
+    """Sum GL signed amounts for equity distribution/draw/shareholder rows."""
+    total = Decimal("0.00")
+    for row in gl_rows:
+        account_type = row.account_type.lower()
+        account_name = row.account_name.lower()
+        if "equity" not in account_type:
+            continue
+        if not any(keyword in account_name for keyword in ("distribution", "draw", "shareholder")):
+            continue
+        total += row.signed_amount
+    return total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
 def evaluate_re_structural_flags(

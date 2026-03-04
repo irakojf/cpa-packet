@@ -8,6 +8,7 @@ from cpapacket.models.distributions import MiscodedDistributionCandidate
 from cpapacket.models.general_ledger import GeneralLedgerRow
 from cpapacket.reconciliation.retained_earnings import (
     evaluate_re_structural_flags,
+    extract_distribution_total,
     integrate_miscoded_distributions,
 )
 
@@ -135,3 +136,46 @@ def test_evaluate_re_structural_flags_clean_case() -> None:
     )
 
     assert flags == []
+
+
+def test_extract_distribution_total_from_equity_distribution_rows() -> None:
+    rows = [
+        GeneralLedgerRow(
+            txn_id="D1",
+            date=date(2025, 3, 1),
+            transaction_type="Check",
+            document_number="D1",
+            account_name="Shareholder Distributions",
+            account_type="Equity",
+            payee="Owner",
+            memo="draw",
+            debit=Decimal("1000"),
+            credit=Decimal("0"),
+        ),
+        GeneralLedgerRow(
+            txn_id="D2",
+            date=date(2025, 3, 2),
+            transaction_type="Journal",
+            document_number="D2",
+            account_name="Owner Draw",
+            account_type="Equity",
+            payee="Owner",
+            memo="adjustment",
+            debit=Decimal("200"),
+            credit=Decimal("0"),
+        ),
+        GeneralLedgerRow(
+            txn_id="E1",
+            date=date(2025, 3, 3),
+            transaction_type="Expense",
+            document_number="E1",
+            account_name="Meals Expense",
+            account_type="Expense",
+            payee="Vendor",
+            memo="lunch",
+            debit=Decimal("999"),
+            credit=Decimal("0"),
+        ),
+    ]
+
+    assert extract_distribution_total(rows) == Decimal("1200.00")
