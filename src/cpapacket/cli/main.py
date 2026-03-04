@@ -8,6 +8,7 @@ from typing import Any, Literal, cast
 
 import click
 
+from cpapacket.clients.auth import OAuthTokenStore
 from cpapacket.core.context import RunContext, resolve_year_and_source
 
 MethodOption = Literal["accrual", "cash"]
@@ -25,6 +26,15 @@ def _normalize_csv_values(raw_value: str | None) -> list[str]:
     if not raw_value:
         return []
     return [value.strip() for value in raw_value.split(",") if value.strip()]
+
+
+def _detect_gusto_availability() -> bool:
+    """Return True when a Gusto OAuth token is available for this environment."""
+    try:
+        return OAuthTokenStore("gusto").load_token() is not None
+    except Exception:
+        # Gusto auth is optional; detection failures should never block execution.
+        return False
 
 
 def build_run_context(
@@ -71,6 +81,7 @@ def build_run_context(
         quiet=quiet,
         plain=plain,
         owner_keywords=_normalize_csv_values(owner_keywords_raw),
+        gusto_available=_detect_gusto_availability(),
     )
 
 
