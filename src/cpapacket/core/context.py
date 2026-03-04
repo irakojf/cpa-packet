@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import re
+from datetime import date
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+_PACKET_YEAR_PATTERN = re.compile(r".*_(\d{4})_CPA_Packet$")
 
 
 class RunContext(BaseModel):
@@ -61,3 +65,35 @@ class RunContext(BaseModel):
         if self.non_interactive and self.on_conflict == "prompt":
             raise ValueError("non_interactive mode cannot use on_conflict='prompt'")
         return self
+
+
+def resolve_year_and_source(
+    *,
+    explicit_year: int | None,
+    out_dir: Path | str | None,
+    today: date | None = None,
+) -> tuple[int, Literal["explicit", "inferred", "default"]]:
+    """Resolve tax year using CLI explicit value, output dir hint, then month rule."""
+    if explicit_year is not None:
+        if explicit_year < 1:
+            raise ValueError("explicit_year must be >= 1")
+        return explicit_year, "explicit"
+
+    inferred = _infer_year_from_out_dir(out_dir)
+    if inferred is not None:
+        return inferred, "inferred"
+
+    reference_date = today or date.today()
+    if 1 <= reference_date.month <= 9:
+        return reference_date.year - 1, "default"
+    return reference_date.year, "default"
+
+
+def _infer_year_from_out_dir(out_dir: Path | str | None) -> int | None:
+    if out_dir is None:
+        return None
+    out_name = Path(out_dir).name
+    match = _PACKET_YEAR_PATTERN.match(out_name)
+    if match is None:
+        return None
+    return int(match.group(1))
