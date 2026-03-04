@@ -21,6 +21,16 @@ def test_compute_input_fingerprint_is_stable_for_key_order() -> None:
     assert compute_input_fingerprint(left) == compute_input_fingerprint(right)
 
 
+def test_compute_input_fingerprint_changes_when_inputs_change() -> None:
+    baseline = {"year": 2025, "method": "accrual", "include_debug": False}
+    changed_year = {"year": 2024, "method": "accrual", "include_debug": False}
+    changed_flag = {"year": 2025, "method": "accrual", "include_debug": True}
+
+    baseline_fp = compute_input_fingerprint(baseline)
+    assert baseline_fp != compute_input_fingerprint(changed_year)
+    assert baseline_fp != compute_input_fingerprint(changed_flag)
+
+
 def test_canonicalize_inputs_normalizes_supported_types() -> None:
     value = {
         "amount": Decimal("42.10"),
