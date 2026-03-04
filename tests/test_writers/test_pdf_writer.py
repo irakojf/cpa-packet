@@ -6,9 +6,12 @@ import pytest
 
 from cpapacket.writers.pdf_writer import (
     PdfBodyLine,
+    PdfTableRow,
+    PdfTableSection,
     PdfWriter,
     PdfWriterConfig,
     _normalize_body_line,
+    _normalize_table_row,
     _truncate_with_ellipsis,
 )
 
@@ -91,6 +94,126 @@ def test_normalize_body_line_supports_plain_and_structured_lines() -> None:
 
     assert normalized_plain == PdfBodyLine(text="Revenue")
     assert normalized_structured == structured
+
+
+def test_normalize_table_row_supports_plain_and_structured_rows() -> None:
+    normalized_plain = _normalize_table_row(("Payroll", 100, "ok"))
+    structured = PdfTableRow(cells=("Total", "100.00"), row_type="total")
+    normalized_structured = _normalize_table_row(structured)
+
+    assert normalized_plain == PdfTableRow(cells=("Payroll", "100", "ok"))
+    assert normalized_structured == structured
+
+
+def test_pdf_writer_writes_reconciliation_table_pdf(tmp_path: Path) -> None:
+    _ensure_reportlab_installed()
+
+    destination = tmp_path / "recon-table.pdf"
+    writer = PdfWriter()
+    rows = [
+        PdfTableRow(
+            cells=("Payroll", "25000.00", "25000.00", "0.00", "Reconciled"),
+            status="reconciled",
+        ),
+        PdfTableRow(
+            cells=("Distributions", "5200.00", "5000.00", "200.00", "Mismatch"),
+            status="mismatch",
+        ),
+        PdfTableRow(
+            cells=("Total", "30200.00", "30000.00", "200.00", ""),
+            row_type="total",
+        ),
+    ]
+    result_path = writer.write_table_report(
+        destination,
+        company_name="Example Co",
+        report_title="Retained Earnings Reconciliation",
+        date_range_label="2025",
+        columns=("Category", "Book", "Expected", "Delta", "Status"),
+        rows=rows,
+    )
+
+    assert result_path == destination
+    assert destination.exists()
+    assert destination.stat().st_size > 0
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_pdf_writer_table_report_requires_non_blank_columns(tmp_path: Path) -> None:
+    _ensure_reportlab_installed()
+
+    writer = PdfWriter()
+    with pytest.raises(ValueError, match="at least one non-blank heading"):
+        writer.write_table_report(
+            tmp_path / "invalid.pdf",
+            company_name="Example Co",
+            report_title="Report",
+            date_range_label="2025",
+            columns=(" ", ""),
+            rows=[],
+        )
+
+
+def test_pdf_writer_writes_reconciliation_report_sections(tmp_path: Path) -> None:
+    _ensure_reportlab_installed()
+
+    destination = tmp_path / "reconciliation-sections.pdf"
+    writer = PdfWriter()
+    sections = [
+        PdfTableSection(
+            title="Payroll Reconciliation",
+            headers=("Category", "Book", "Expected", "Delta", "Status"),
+            rows=(
+                PdfTableRow(
+                    cells=(
+                        "Payroll",
+                        "25000.00",
+                        "25000.00",
+                        "0.00",
+                        "RECONCILED",
+                    ),
+                    status="reconciled",
+                ),
+                PdfTableRow(
+                    cells=(
+                        "Distributions",
+                        "5200.00",
+                        "5000.00",
+                        "200.00",
+                        "MISMATCH",
+                    ),
+                    status="mismatch",
+                ),
+                PdfTableRow(
+                    cells=("Total", "30200.00", "30000.00", "200.00", ""),
+                    row_type="total",
+                ),
+            ),
+        ),
+        PdfTableSection(
+            title="Retained Earnings Rollforward",
+            headers=("Line Item", "Amount"),
+            rows=(
+                PdfTableRow(cells=("Beginning RE", "50000.00")),
+                PdfTableRow(cells=("Net Income", "25000.00")),
+                PdfTableRow(cells=("Distributions", "(10000.00)")),
+                PdfTableRow(cells=("Ending RE", "65000.00"), row_type="total"),
+            ),
+        ),
+    ]
+
+    result_path = writer.write_reconciliation_report(
+        destination,
+        company_name="Example Co",
+        report_title="Reconciliation Summary",
+        date_range_label="2025",
+        sections=sections,
+    )
+
+    assert result_path == destination
+    assert destination.exists()
+    assert destination.stat().st_size > 0
+    assert not list(tmp_path.glob("*.tmp"))
 
 
 def test_truncate_with_ellipsis_handles_small_limits() -> None:
