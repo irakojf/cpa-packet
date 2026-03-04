@@ -1,0 +1,56 @@
+{
+  "QueryResponse": {
+    "Account": [
+      {
+        "Id": "1",
+        "Name": "Contract Labor",
+        "AccountType": "Expense",
+        "AccountSubType": "JobMaterials",
+        "Active": true
+      },
+      {
+        "Id": "2",
+        "Name": "Subcontractors",
+        "AccountType": "Cost of Goods Sold",
+        "AccountSubType": "CostOfLabor",
+        "Active": true
+      },
+      {
+        "Id": "3",
+        "Name": "Stripe Clearing",
+        "AccountType": "Expense",
+        "AccountSubType": "CreditCard",
+        "Active": true
+      },
+      {
+        "Id": "4",
+        "Name": "PayPal Fees",
+        "AccountType": "Expense",
+        "AccountSubType": "CreditCard",
+        "Active": true
+      },
+      {
+        "Id": "5",
+        "Name": "Office Supplies",
+        "AccountType": "Expense",
+        "AccountSubType": "SuppliesMaterialsCogs",
+        "Active": true
+      },
+      {
+        "Id": "6",
+        "Name": "Software Subscriptions",
+        "AccountType": "Expense",
+        "AccountSubType": "Software",
+        "Active": true
+      },
+      {
+        "Id": "7",
+        "Name": "Contractor Income",
+        "AccountType": "Income",
+        "AccountSubType": "SalesOfProductIncome",
+        "Active": true
+      }
+    ]
+  },
+  "time": "2026-01-15T00:00:00.000Z"
+}

@@ -26,6 +26,22 @@ from cpapacket.writers.pdf_writer import PdfBodyLine, PdfWriter
 
 _ZERO = Decimal("0.00")
 _CENT = Decimal("0.01")
+_LOW_GROSS_WAGE_THRESHOLD = Decimal("1000.00")
+_RETIREMENT_TO_WAGES_RATIO_THRESHOLD = Decimal("0.20")
+_MAX_NEGATIVE_EXAMPLES = 3
+_OFFICER_NAME_KEYWORDS = ("officer", "ceo", "chief", "president", "owner")
+_OFFICER_ROLE_KEYS = ("title", "job_title", "role", "employee_type")
+_OFFICER_BOOLEAN_KEYS = ("is_officer", "officer")
+_RUN_TOTAL_NEGATIVE_KEYS = ("gross_pay", "employee_taxes", "employer_taxes")
+_EMPLOYEE_NEGATIVE_KEYS = (
+    "regular_pay",
+    "bonus_pay",
+    "overtime_pay",
+    "employee_401k",
+    "employer_401k",
+    "employee_taxes",
+    "employer_taxes",
+)
 
 
 def normalize_gusto_payload(
@@ -207,6 +223,8 @@ def _to_money(value: Any) -> Decimal:
         return _ZERO
     if not parsed.is_finite():
         return _ZERO
+    if parsed < _ZERO:
+        return _ZERO
     return parsed.quantize(_CENT, rounding=ROUND_HALF_UP)
 
 
@@ -220,6 +238,156 @@ def _parse_date(value: Any) -> date | None:
         return date.fromisoformat(text)
     except ValueError:
         return None
+
+
+def _parse_money_loose(value: Any) -> Decimal | None:
+    if value is None:
+        return None
+    try:
+        parsed = value if isinstance(value, Decimal) else Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    if not parsed.is_finite():
+        return None
+    return parsed.quantize(_CENT, rounding=ROUND_HALF_UP)
+
+
+def _looks_like_officer(raw_compensation: Mapping[str, Any]) -> bool:
+    for key in _OFFICER_BOOLEAN_KEYS:
+        value = raw_compensation.get(key)
+        if isinstance(value, bool) and value:
+            return True
+        if isinstance(value, str) and value.strip().lower() in {"true", "yes", "1"}:
+            return True
+    for key in _OFFICER_ROLE_KEYS:
+        value = raw_compensation.get(key)
+        if isinstance(value, str):
+            text = value.strip().lower()
+            if any(keyword in text for keyword in _OFFICER_NAME_KEYWORDS):
+                return True
+    name = str(raw_compensation.get("employee_name", "")).strip().lower()
+    return "officer" in name
+
+
+def detect_payroll_soft_flags(
+    *,
+    raw_runs: list[Any],
+    employee_breakdowns: list[EmployeePayrollBreakdown],
+) -> list[str]:
+    warnings: list[str] = []
+    warnings.extend(_detect_negative_amount_flags(raw_runs))
+    warnings.extend(_detect_officer_zero_wage_flags(raw_runs, employee_breakdowns))
+    warnings.extend(_detect_low_wage_retirement_flags(employee_breakdowns))
+    return warnings
+
+
+def _detect_negative_amount_flags(raw_runs: list[Any]) -> list[str]:
+    examples: list[str] = []
+    for raw in raw_runs:
+        if not isinstance(raw, Mapping):
+            continue
+        run_id = str(raw.get("uuid", "")).strip() or "unknown-run"
+        totals = raw.get("totals")
+        if isinstance(totals, Mapping):
+            for key in _RUN_TOTAL_NEGATIVE_KEYS:
+                amount = _parse_money_loose(totals.get(key))
+                if amount is not None and amount < _ZERO:
+                    examples.append(f"{run_id}.totals.{key}={amount:.2f}")
+                    if len(examples) >= _MAX_NEGATIVE_EXAMPLES:
+                        break
+        if len(examples) >= _MAX_NEGATIVE_EXAMPLES:
+            break
+        for compensation in _employee_compensations(raw):
+            employee_id = str(compensation.get("employee_uuid", "")).strip() or "unknown-employee"
+            for key in _EMPLOYEE_NEGATIVE_KEYS:
+                amount = _parse_money_loose(compensation.get(key))
+                if amount is not None and amount < _ZERO:
+                    examples.append(f"{run_id}.{employee_id}.{key}={amount:.2f}")
+                    if len(examples) >= _MAX_NEGATIVE_EXAMPLES:
+                        break
+            if len(examples) >= _MAX_NEGATIVE_EXAMPLES:
+                break
+        if len(examples) >= _MAX_NEGATIVE_EXAMPLES:
+            break
+    if not examples:
+        return []
+    summary = ", ".join(examples)
+    return [f"Negative payroll amounts detected and treated as 0.00: {summary}"]
+
+
+def _detect_officer_zero_wage_flags(
+    raw_runs: list[Any],
+    employee_breakdowns: list[EmployeePayrollBreakdown],
+) -> list[str]:
+    wages_by_employee: dict[str, Decimal] = {}
+    names_by_employee: dict[str, str] = {}
+    for employee_id, employee_name, wages, *_ in aggregate_employee_breakdowns(employee_breakdowns):
+        wages_by_employee[employee_id] = wages
+        names_by_employee[employee_id] = employee_name
+
+    officer_ids: set[str] = set()
+    for raw in raw_runs:
+        if not isinstance(raw, Mapping):
+            continue
+        for compensation in _employee_compensations(raw):
+            if not _looks_like_officer(compensation):
+                continue
+            employee_id = str(compensation.get("employee_uuid", "")).strip()
+            if employee_id:
+                officer_ids.add(employee_id)
+                if employee_id not in names_by_employee:
+                    names_by_employee[employee_id] = str(
+                        compensation.get("employee_name", "Unknown")
+                    ).strip() or "Unknown"
+
+    if not officer_ids:
+        return []
+
+    zero_wage_officers = [
+        names_by_employee.get(employee_id, employee_id)
+        for employee_id in sorted(officer_ids)
+        if wages_by_employee.get(employee_id, _ZERO) == _ZERO
+    ]
+    if not zero_wage_officers:
+        return []
+    return [f"Officer wages are 0.00 for: {', '.join(zero_wage_officers)}"]
+
+
+def _detect_low_wage_retirement_flags(
+    employee_breakdowns: list[EmployeePayrollBreakdown],
+) -> list[str]:
+    low_wage_employees: list[str] = []
+    high_ratio_employees: list[str] = []
+
+    for _, employee_name, wages, _, _, employee_retirement, employer_retirement in (
+        aggregate_employee_breakdowns(employee_breakdowns)
+    ):
+        retirement_total = employee_retirement + employer_retirement
+        if retirement_total <= _ZERO:
+            continue
+        if wages <= _LOW_GROSS_WAGE_THRESHOLD:
+            low_wage_employees.append(
+                f"{employee_name} (wages={wages:.2f}, retirement={retirement_total:.2f})"
+            )
+            continue
+        ratio = (retirement_total / wages).quantize(_CENT, rounding=ROUND_HALF_UP)
+        if ratio >= _RETIREMENT_TO_WAGES_RATIO_THRESHOLD:
+            high_ratio_employees.append(
+                f"{employee_name} (wages={wages:.2f}, retirement={retirement_total:.2f})"
+            )
+
+    warnings: list[str] = []
+    if low_wage_employees:
+        warnings.append(
+            "Retirement contributions present with unusually low gross wages: "
+            + ", ".join(low_wage_employees[:3])
+        )
+    if high_ratio_employees:
+        warnings.append(
+            "Retirement contributions are high relative to gross wages: "
+            + ", ".join(high_ratio_employees[:3])
+        )
+    return warnings
 
 
 class _EmployeeTotals(TypedDict):
@@ -317,6 +485,10 @@ class PayrollSummaryDeliverable:
         raw_runs = store.get_payroll_runs(ctx.year)
         runs = normalize_payroll_runs(raw_runs)
         employee_breakdowns = normalize_employee_breakdowns(raw_runs)
+        soft_flag_warnings = detect_payroll_soft_flags(
+            raw_runs=raw_runs,
+            employee_breakdowns=employee_breakdowns,
+        )
         company_summary, payroll_cost_total = build_company_summary(
             year=ctx.year,
             payroll_runs=runs,
@@ -329,8 +501,9 @@ class PayrollSummaryDeliverable:
             payroll_runs=runs,
             employee_breakdowns=employee_breakdowns,
             raw_payload=raw_payload,
+            soft_flags=soft_flag_warnings,
         )
-        warnings: list[str] = []
+        warnings: list[str] = list(soft_flag_warnings)
         if not runs:
             warnings.append("No payroll runs found; generated zero-value payroll summary.")
         return DeliverableResult(
@@ -349,6 +522,7 @@ def write_payroll_output_artifacts(
     payroll_runs: list[PayrollRun],
     employee_breakdowns: list[EmployeePayrollBreakdown],
     raw_payload: Mapping[str, Any],
+    soft_flags: list[str] | None = None,
 ) -> list[str]:
     """Write payroll summary artifacts (company + per-employee) and metadata."""
     deliverable_dir = ensure_directory(ctx.out_dir / DELIVERABLE_FOLDERS["payroll_summary"])
@@ -478,6 +652,7 @@ def write_payroll_output_artifacts(
         "no_raw": ctx.no_raw,
         "redact": ctx.redact,
         "source_run_count": len(payroll_runs),
+        "soft_flags": list(soft_flags or []),
     }
     metadata = DeliverableMetadata(
         deliverable=metadata_key,

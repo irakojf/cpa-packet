@@ -10,6 +10,7 @@ from typing import Any, Literal, cast
 
 import click
 
+from cpapacket.cli.balance_sheet import register_balance_sheet_command
 from cpapacket.cli.check import register_check_command
 from cpapacket.cli.doctor import register_doctor_command
 from cpapacket.cli.general_ledger import register_general_ledger_command
@@ -201,6 +202,7 @@ def cli(
 
 
 register_pnl_command(cli)
+register_balance_sheet_command(cli)
 register_general_ledger_command(cli)
 register_payroll_summary_command(cli)
 register_check_command(cli)

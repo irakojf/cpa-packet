@@ -10,6 +10,7 @@ from cpapacket.deliverables.payroll_summary import (
     PayrollSummaryDeliverable,
     aggregate_employee_breakdowns,
     build_company_summary,
+    detect_payroll_soft_flags,
     normalize_employee_breakdowns,
     normalize_gusto_payload,
     normalize_payroll_runs,
@@ -135,6 +136,47 @@ def test_normalize_employee_breakdowns_uses_explicit_employee_taxes_when_present
     assert rows[0].employer_taxes == Decimal("9.25")
 
 
+def test_detect_payroll_soft_flags_emits_officer_low_wage_and_negative_warnings() -> None:
+    raw_runs = [
+        {
+            "uuid": "run-soft-flags",
+            "pay_period_start_date": "2025-01-01",
+            "pay_period_end_date": "2025-01-15",
+            "check_date": "2025-01-20",
+            "totals": {
+                "gross_pay": "0.00",
+                "employee_taxes": "-10.00",
+                "employer_taxes": "0.00",
+            },
+            "employee_compensations": [
+                {
+                    "employee_uuid": "emp-off",
+                    "employee_name": "Pat Officer",
+                    "is_officer": True,
+                    "regular_pay": "-100.00",
+                    "bonus_pay": "0.00",
+                    "overtime_pay": "0.00",
+                    "employee_401k": "50.00",
+                    "employer_401k": "25.00",
+                }
+            ],
+        }
+    ]
+
+    employee_rows = normalize_employee_breakdowns(raw_runs)
+    warnings = detect_payroll_soft_flags(raw_runs=raw_runs, employee_breakdowns=employee_rows)
+
+    assert any(
+        "Negative payroll amounts detected and treated as 0.00" in warning
+        for warning in warnings
+    )
+    assert any("Officer wages are 0.00 for: Pat Officer" in warning for warning in warnings)
+    assert any(
+        "Retirement contributions present with unusually low gross wages" in warning
+        for warning in warnings
+    )
+
+
 def test_normalize_gusto_payload_handles_missing_payrolls_key() -> None:
     runs, rows = normalize_gusto_payload({})
     assert runs == []
@@ -238,6 +280,51 @@ def test_payroll_summary_deliverable_skips_when_gusto_unavailable(tmp_path: Path
     assert provider.calls == []
 
 
+def test_payroll_summary_deliverable_surfaces_soft_flags_as_non_blocking_warnings(
+    tmp_path: Path,
+) -> None:
+    payroll_runs: list[dict[str, object]] = [
+        {
+            "uuid": "run-soft-flags",
+            "pay_period_start_date": "2025-01-01",
+            "pay_period_end_date": "2025-01-15",
+            "check_date": "2025-01-20",
+            "totals": {
+                "gross_pay": "0.00",
+                "employee_taxes": "-10.00",
+                "employer_taxes": "0.00",
+            },
+            "employee_compensations": [
+                {
+                    "employee_uuid": "emp-off",
+                    "employee_name": "Pat Officer",
+                    "is_officer": True,
+                    "regular_pay": "-100.00",
+                    "bonus_pay": "0.00",
+                    "overtime_pay": "0.00",
+                    "employee_401k": "50.00",
+                    "employer_401k": "25.00",
+                }
+            ],
+        }
+    ]
+    provider = _PayrollProvider(payroll_runs)
+    deliverable = PayrollSummaryDeliverable()
+
+    result = deliverable.generate(_run_context(tmp_path), provider, prompts={})
+
+    assert result.success is True
+    assert any(
+        "Negative payroll amounts detected and treated as 0.00" in warning
+        for warning in result.warnings
+    )
+    assert any("Officer wages are 0.00 for: Pat Officer" in warning for warning in result.warnings)
+    assert any(
+        "Retirement contributions present with unusually low gross wages" in warning
+        for warning in result.warnings
+    )
+
+
 def test_write_payroll_output_artifacts_writes_company_employee_and_private_metadata(
     tmp_path: Path,
 ) -> None:
@@ -279,6 +366,7 @@ def test_write_payroll_output_artifacts_writes_company_employee_and_private_meta
     assert metadata.deliverable == "payroll_summary_2025"
     assert len(metadata.input_fingerprint) == 64
     assert metadata.schema_versions == {"csv": "1.0"}
+    assert metadata.inputs.get("soft_flags") == []
     assert str(company_dir / "Annual_Payroll_Summary_2025.csv") in metadata.artifacts
 
 
