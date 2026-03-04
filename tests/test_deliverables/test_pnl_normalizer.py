@@ -83,3 +83,107 @@ def test_normalize_pnl_rows_handles_real_fixture() -> None:
     assert rows, "fixture should flatten to at least one row"
     assert any(row.section == "Income" for row in rows)
     assert any(row.label == "Net Profit" for row in rows)
+
+
+def test_normalize_pnl_rows_tracks_deep_levels_and_subtotal_classification() -> None:
+    payload = {
+        "Rows": {
+            "Row": [
+                {
+                    "Header": {"ColData": [{"value": "Income"}]},
+                    "Rows": {
+                        "Row": [
+                            {
+                                "Header": {"ColData": [{"value": "Services"}]},
+                                "Rows": {
+                                    "Row": [
+                                        {
+                                            "ColData": [
+                                                {"value": "Strategy Consulting"},
+                                                {"value": "900.00"},
+                                            ]
+                                        },
+                                        {
+                                            "Summary": {
+                                                "ColData": [
+                                                    {"value": "Services subtotal"},
+                                                    {"value": "900.00"},
+                                                ]
+                                            }
+                                        },
+                                    ]
+                                },
+                            }
+                        ]
+                    },
+                },
+                {
+                    "Header": {"ColData": [{"value": "Expenses"}]},
+                    "Rows": {
+                        "Row": [
+                            {
+                                "ColData": [
+                                    {"value": "Software"},
+                                    {"value": "100.00"},
+                                ]
+                            }
+                        ]
+                    },
+                    "Summary": {"ColData": [{"value": "Total Expenses"}, {"value": "100.00"}]},
+                },
+            ]
+        }
+    }
+
+    rows = normalize_pnl_rows(payload)
+
+    service_header = next(row for row in rows if row.label == "Services")
+    consulting = next(row for row in rows if row.label == "Strategy Consulting")
+    services_subtotal = next(row for row in rows if row.label == "Services subtotal")
+    expenses_account = next(row for row in rows if row.label == "Software")
+    expenses_total = next(row for row in rows if row.label == "Total Expenses")
+
+    assert service_header.level == 1
+    assert consulting.level == 2
+    assert consulting.path == "Income > Services > Strategy Consulting"
+    assert services_subtotal.row_type == "subtotal"
+    assert services_subtotal.section == "Income"
+    assert expenses_account.section == "Expenses"
+    assert expenses_total.row_type == "total"
+
+
+def test_normalize_pnl_rows_maps_other_expense_and_subtotal() -> None:
+    payload = {
+        "Rows": {
+            "Row": [
+                {
+                    "Header": {"ColData": [{"value": "Other Expenses"}]},
+                    "Rows": {"Row": [{"ColData": [{"value": "Bank Fees"}, {"value": "10.00"}]}]},
+                    "Summary": {"ColData": [{"value": "Operating Margin"}, {"value": "90.00"}]},
+                }
+            ]
+        }
+    }
+
+    rows = normalize_pnl_rows(payload)
+
+    assert rows[0].section == "Other Expense"
+    assert rows[1].section == "Other Expense"
+    assert rows[2].row_type == "subtotal"
+    assert rows[2].amount == Decimal("90.00")
+
+
+def test_normalize_pnl_rows_uses_uncategorized_fallback_and_zero_amount() -> None:
+    payload = {
+        "Rows": {
+            "Row": [
+                {"ColData": [{"value": "Loose Line"}, {"value": "not-a-number"}]},
+            ]
+        }
+    }
+
+    rows = normalize_pnl_rows(payload)
+
+    assert len(rows) == 1
+    assert rows[0].section == "Uncategorized"
+    assert rows[0].amount == Decimal("0")
