@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+import csv
+import hashlib
+import json
+from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
+from tempfile import NamedTemporaryFile
+from time import gmtime, strftime
 from typing import Any, Mapping
 
 from cpapacket.models.normalized import NormalizedRow
+from cpapacket.utils.constants import DELIVERABLE_FOLDERS, SCHEMA_VERSIONS
 
 _DEFAULT_SECTION = "Uncategorized"
 _SECTION_MAP = {
@@ -173,3 +181,165 @@ def _classify_summary(label: str) -> str:
     if lower.startswith("net ") or lower.startswith("total "):
         return "total"
     return "subtotal"
+
+
+@dataclass(frozen=True, slots=True)
+class PnlDeliverableResult:
+    """Result payload returned by PnlDeliverable.generate."""
+
+    deliverable_key: str
+    success: bool
+    artifacts: list[str]
+    warnings: list[str]
+    error: str | None = None
+
+
+class PnlDeliverable:
+    """Profit and Loss deliverable orchestrating normalization and artifact writes."""
+
+    key = "pnl"
+    folder = DELIVERABLE_FOLDERS["pnl"]
+    required = True
+    dependencies: list[str] = []
+    requires_gusto = False
+
+    def gather_prompts(self, _ctx: object) -> dict[str, Any]:
+        return {}
+
+    def generate(
+        self,
+        *,
+        report_payload: Mapping[str, Any],
+        output_root: Path,
+        year: int,
+        on_conflict: str = "abort",
+        no_raw: bool = False,
+    ) -> PnlDeliverableResult:
+        warnings: list[str] = []
+
+        rows = normalize_pnl_rows(report_payload)
+        if not rows:
+            warnings.append("P&L report normalized to zero rows.")
+
+        deliverable_dir = output_root / self.folder
+        deliverable_dir.mkdir(parents=True, exist_ok=True)
+        meta_dir = output_root / "_meta"
+        meta_dir.mkdir(parents=True, exist_ok=True)
+
+        base_name = f"Profit_and_Loss_{year}"
+        csv_path = _resolve_output_path(deliverable_dir / f"{base_name}.csv", on_conflict)
+        pdf_path = _resolve_output_path(deliverable_dir / f"{base_name}.pdf", on_conflict)
+        json_path = None if no_raw else _resolve_output_path(deliverable_dir / f"{base_name}_raw.json", on_conflict)
+        metadata_path = _resolve_output_path(meta_dir / f"{self.key}_metadata.json", on_conflict)
+
+        _write_csv(csv_path, rows)
+        _write_pdf(pdf_path, rows, year)
+        if json_path is not None:
+            _write_json(json_path, report_payload)
+        _write_metadata(
+            path=metadata_path,
+            key=self.key,
+            report_payload=report_payload,
+            artifacts=[csv_path, pdf_path] + ([json_path] if json_path is not None else []),
+        )
+
+        return PnlDeliverableResult(
+            deliverable_key=self.key,
+            success=True,
+            artifacts=[str(csv_path), str(pdf_path)] + ([str(json_path)] if json_path is not None else []),
+            warnings=warnings,
+        )
+
+
+def _resolve_output_path(path: Path, on_conflict: str) -> Path:
+    if not path.exists():
+        return path
+
+    normalized = on_conflict.strip().lower()
+    if normalized == "overwrite":
+        return path
+    if normalized == "copy":
+        suffix = strftime("%Y%m%d_%H%M%S", gmtime())
+        return path.with_name(f"{path.stem}__copy_{suffix}{path.suffix}")
+    raise FileExistsError(f"{path} already exists and on_conflict=abort")
+
+
+def _write_csv(path: Path, rows: list[NormalizedRow]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with NamedTemporaryFile("w", delete=False, encoding="utf-8", newline="", dir=path.parent) as tmp_file:
+        writer = csv.writer(tmp_file)
+        writer.writerow(["section", "path", "label", "row_type", "level", "amount"])
+        for row in rows:
+            writer.writerow(
+                [
+                    row.section,
+                    row.path,
+                    row.label,
+                    row.row_type,
+                    row.level,
+                    f"{row.amount:.2f}",
+                ]
+            )
+        tmp_name = tmp_file.name
+    Path(tmp_name).replace(path)
+
+
+def _write_pdf(path: Path, rows: list[NormalizedRow], year: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        from reportlab.lib.pagesizes import letter
+        from reportlab.pdfgen import canvas
+    except ImportError as exc:  # pragma: no cover - runtime dependency path
+        raise RuntimeError("reportlab is required to generate PDF output") from exc
+
+    with NamedTemporaryFile("wb", delete=False, dir=path.parent) as tmp_file:
+        tmp_name = tmp_file.name
+
+    pdf = canvas.Canvas(tmp_name, pagesize=letter)
+    width, height = letter
+    y = height - 48
+    pdf.setFont("Helvetica-Bold", 12)
+    pdf.drawString(40, y, f"Profit and Loss - {year}")
+    y -= 20
+    pdf.setFont("Helvetica", 9)
+    for row in rows:
+        if y < 48:
+            pdf.showPage()
+            y = height - 48
+            pdf.setFont("Helvetica", 9)
+        indent = " " * (row.level * 2)
+        line = f"{indent}{row.label} ({row.row_type}) .... {row.amount:.2f}"
+        pdf.drawString(40, y, line[:120])
+        y -= 12
+    pdf.save()
+    Path(tmp_name).replace(path)
+
+
+def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with NamedTemporaryFile("w", delete=False, encoding="utf-8", dir=path.parent) as tmp_file:
+        json.dump(payload, tmp_file, indent=2, sort_keys=True)
+        tmp_name = tmp_file.name
+    Path(tmp_name).replace(path)
+
+
+def _write_metadata(
+    *,
+    path: Path,
+    key: str,
+    report_payload: Mapping[str, Any],
+    artifacts: list[Path],
+) -> None:
+    canonical = json.dumps(report_payload, sort_keys=True, separators=(",", ":"))
+    fingerprint = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    payload = {
+        "deliverable": key,
+        "input_fingerprint": fingerprint,
+        "schema_versions": SCHEMA_VERSIONS.get(key, {}),
+        "artifacts": [str(item) for item in artifacts],
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with NamedTemporaryFile("w", delete=False, encoding="utf-8", dir=path.parent) as tmp_file:
+        json.dump(payload, tmp_file, indent=2, sort_keys=True)
+        tmp_name = tmp_file.name
+    Path(tmp_name).replace(path)
