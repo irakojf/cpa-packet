@@ -2,13 +2,22 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import json
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
-from typing import Any, Protocol
+from pathlib import Path
+from typing import Any, IO, Protocol, cast
 
+from cpapacket.core.context import RunContext
+from cpapacket.core.filesystem import atomic_write
+from cpapacket.deliverables.base import DeliverableResult
 from cpapacket.deliverables.general_ledger_normalizer import normalize_general_ledger_report
 from cpapacket.models.general_ledger import GeneralLedgerRow
+from cpapacket.utils.constants import DELIVERABLE_FOLDERS, SCHEMA_VERSIONS
+from cpapacket.utils.prompts import resolve_output_path
+from cpapacket.writers.csv_writer import CsvWriter
+from cpapacket.writers.json_writer import JsonWriter
 
 
 class GeneralLedgerMonthProvider(Protocol):
@@ -133,3 +142,173 @@ def _dedupe_key_for_row(row: GeneralLedgerRow) -> str:
         )
     )
     return f"composite:{sha256(signature.encode('utf-8')).hexdigest()}"
+
+
+class GeneralLedgerDeliverable:
+    """Deliverable implementation for the full-year general ledger."""
+
+    key = "general_ledger"
+    folder = DELIVERABLE_FOLDERS["general_ledger"]
+    required = True
+    dependencies: list[str] = []
+    requires_gusto = False
+
+    def gather_prompts(self, _ctx: object) -> dict[str, Any]:
+        return {}
+
+    def is_current(self, _ctx: object) -> bool:
+        return False
+
+    def generate(
+        self,
+        ctx: RunContext,
+        provider: GeneralLedgerMonthProvider,
+        prompts: dict[str, Any],
+    ) -> DeliverableResult:
+        del prompts
+
+        warnings: list[str] = []
+        slices = fetch_general_ledger_monthly_slices(year=ctx.year, provider=provider)
+        rows = merge_general_ledger_monthly_slices(slices)
+        if not rows:
+            warnings.append("General ledger normalized to zero rows.")
+
+        deliverable_dir = ctx.out_dir / self.folder
+        deliverable_dir.mkdir(parents=True, exist_ok=True)
+        meta_dir = ctx.out_dir / "_meta"
+        meta_dir.mkdir(parents=True, exist_ok=True)
+
+        csv_path = _resolve_output_path(
+            deliverable_dir / f"General_Ledger_{ctx.year}.csv",
+            on_conflict=ctx.on_conflict,
+            non_interactive=ctx.non_interactive,
+        )
+        csv_writer = CsvWriter()
+        csv_writer.write_rows_streaming(
+            csv_path,
+            fieldnames=[
+                "txn_id",
+                "date",
+                "transaction_type",
+                "document_number",
+                "account_name",
+                "account_type",
+                "payee",
+                "memo",
+                "debit",
+                "credit",
+                "signed_amount",
+            ],
+            rows=_iter_csv_rows(rows),
+            dedupe_id_field="txn_id",
+        )
+
+        json_path = JsonWriter().write_payload(
+            deliverable_dir / f"General_Ledger_{ctx.year}_raw.json",
+            payload=_build_raw_payload(ctx.year, slices),
+            no_raw=ctx.no_raw,
+            redact=ctx.redact,
+        )
+
+        metadata_path = _resolve_output_path(
+            meta_dir / f"{self.key}_metadata.json",
+            on_conflict=ctx.on_conflict,
+            non_interactive=ctx.non_interactive,
+        )
+
+        metadata_artifacts = [csv_path]
+        if json_path is not None:
+            metadata_artifacts.append(json_path)
+
+        _write_metadata(
+            path=metadata_path,
+            key=self.key,
+            slices=slices,
+            artifacts=metadata_artifacts,
+            warnings=warnings,
+            context_inputs={
+                "year": ctx.year,
+                "no_raw": ctx.no_raw,
+                "redact": ctx.redact,
+                "force": ctx.force,
+            },
+        )
+
+        artifacts: list[str] = [str(csv_path)]
+        if json_path is not None:
+            artifacts.append(str(json_path))
+
+        return DeliverableResult(
+            deliverable_key=self.key,
+            success=True,
+            artifacts=artifacts,
+            warnings=warnings,
+        )
+
+
+def _resolve_output_path(
+    path: Path,
+    *,
+    on_conflict: str,
+    non_interactive: bool,
+) -> Path:
+    normalized = None if on_conflict == "prompt" else on_conflict
+    return resolve_output_path(path, on_conflict=normalized, non_interactive=non_interactive)
+
+
+def _iter_csv_rows(rows: Sequence[GeneralLedgerRow]) -> Iterable[dict[str, str]]:
+    for row in rows:
+        yield {
+            "txn_id": row.txn_id,
+            "date": row.date.isoformat(),
+            "transaction_type": row.transaction_type,
+            "document_number": row.document_number,
+            "account_name": row.account_name,
+            "account_type": row.account_type,
+            "payee": row.payee or "",
+            "memo": row.memo or "",
+            "debit": format(row.debit, "f"),
+            "credit": format(row.credit, "f"),
+            "signed_amount": format(row.signed_amount, "f"),
+        }
+
+
+def _build_raw_payload(year: int, slices: Sequence[GeneralLedgerMonthlySlice]) -> dict[str, Any]:
+    return {
+        "deliverable": "general_ledger",
+        "year": year,
+        "start_date": f"{year}-01-01",
+        "end_date": f"{year}-12-31",
+        "slices": [slice_.payload for slice_ in slices],
+    }
+
+
+def _write_metadata(
+    *,
+    path: Path,
+    key: str,
+    slices: Sequence[GeneralLedgerMonthlySlice],
+    artifacts: Sequence[Path],
+    warnings: list[str],
+    context_inputs: Mapping[str, Any],
+) -> None:
+    metadata_inputs = {
+        **dict(context_inputs),
+        "slice_hashes": [
+            sha256(json.dumps(slice_.payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+            for slice_ in slices
+        ],
+    }
+    canonical = json.dumps(metadata_inputs, sort_keys=True, separators=(",", ":"))
+    fingerprint = sha256(canonical.encode("utf-8")).hexdigest()
+    payload: dict[str, Any] = {
+        "deliverable": key,
+        "input_fingerprint": fingerprint,
+        "schema_versions": SCHEMA_VERSIONS.get(key, {}),
+        "artifacts": [str(item) for item in artifacts],
+        "warnings": warnings,
+    }
+    with atomic_write(path, mode="w", encoding="utf-8") as handle:
+        text_handle = cast(IO[str], handle)
+        json.dump(payload, text_handle, indent=2, sort_keys=True)
+        text_handle.write("\n")
