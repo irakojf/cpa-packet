@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass
-from decimal import InvalidOperation, ROUND_HALF_UP, Decimal
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
 
 from cpapacket.core.filesystem import atomic_write, ensure_directory
@@ -34,6 +34,21 @@ def extract_net_income_from_pnl_report(report_payload: dict[str, object]) -> Dec
         return Decimal("0.00")
 
     extracted = _search_net_income_value(rows)
+    if extracted is None:
+        return Decimal("0.00")
+    return extracted.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def extract_retained_earnings_from_balance_sheet(report_payload: dict[str, object]) -> Decimal:
+    """Extract retained earnings from a QBO balance-sheet payload."""
+    rows_node = report_payload.get("Rows")
+    if not isinstance(rows_node, dict):
+        return Decimal("0.00")
+    rows = rows_node.get("Row")
+    if not isinstance(rows, list):
+        return Decimal("0.00")
+
+    extracted = _search_retained_earnings_value(rows)
     if extracted is None:
         return Decimal("0.00")
     return extracted.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
@@ -198,3 +213,43 @@ def _parse_decimal_amount(raw: str) -> Decimal:
     except (InvalidOperation, ValueError):
         return Decimal("0.00")
     return -amount if negative else amount
+
+
+def _search_retained_earnings_value(rows: list[object]) -> Decimal | None:
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        label, value = _extract_label_and_amount(row)
+        if label is not None and "retained earnings" in label:
+            return value
+
+        header = row.get("Header")
+        if isinstance(header, dict):
+            label, value = _extract_label_and_amount(header)
+            if label is not None and "retained earnings" in label:
+                return value
+
+        nested_rows = row.get("Rows")
+        if isinstance(nested_rows, dict):
+            child_rows = nested_rows.get("Row")
+            if isinstance(child_rows, list):
+                nested_value = _search_retained_earnings_value(child_rows)
+                if nested_value is not None:
+                    return nested_value
+    return None
+
+
+def _extract_label_and_amount(node: object) -> tuple[str | None, Decimal]:
+    if not isinstance(node, dict):
+        return None, Decimal("0.00")
+    col_data = node.get("ColData")
+    if not isinstance(col_data, list) or len(col_data) < 2:
+        return None, Decimal("0.00")
+    left = col_data[0]
+    right = col_data[1]
+    if not isinstance(left, dict) or not isinstance(right, dict):
+        return None, Decimal("0.00")
+    label = str(left.get("value", "")).strip().lower()
+    amount = _parse_decimal_amount(str(right.get("value", "")).strip())
+    return label, amount

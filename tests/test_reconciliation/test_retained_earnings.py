@@ -10,6 +10,7 @@ from cpapacket.reconciliation.retained_earnings import (
     evaluate_re_structural_flags,
     extract_distribution_total,
     extract_net_income_from_pnl_report,
+    extract_retained_earnings_from_balance_sheet,
     integrate_miscoded_distributions,
 )
 
@@ -219,3 +220,54 @@ def test_extract_net_income_from_pnl_report_handles_income_and_loss() -> None:
 def test_extract_net_income_from_pnl_report_defaults_to_zero_when_missing() -> None:
     assert extract_net_income_from_pnl_report({}) == Decimal("0.00")
     assert extract_net_income_from_pnl_report({"Rows": {"Row": []}}) == Decimal("0.00")
+
+
+def test_extract_retained_earnings_from_balance_sheet_payload() -> None:
+    payload: dict[str, object] = {
+        "Rows": {
+            "Row": [
+                {
+                    "Header": {"ColData": [{"value": "Equity"}]},
+                    "Rows": {
+                        "Row": [
+                            {
+                                "ColData": [
+                                    {"value": "Common Stock"},
+                                    {"value": "100.00"},
+                                ]
+                            },
+                            {
+                                "ColData": [
+                                    {"value": "Retained Earnings"},
+                                    {"value": "5,432.10"},
+                                ]
+                            },
+                        ]
+                    },
+                }
+            ]
+        }
+    }
+
+    assert extract_retained_earnings_from_balance_sheet(payload) == Decimal("5432.10")
+
+
+def test_extract_retained_earnings_from_balance_sheet_defaults_zero() -> None:
+    assert extract_retained_earnings_from_balance_sheet({}) == Decimal("0.00")
+    assert (
+        extract_retained_earnings_from_balance_sheet(
+            {
+                "Rows": {
+                    "Row": [
+                        {
+                            "ColData": [
+                                {"value": "Common Stock"},
+                                {"value": "100.00"},
+                            ]
+                        }
+                    ]
+                }
+            }
+        )
+        == Decimal("0.00")
+    )
