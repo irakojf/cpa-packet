@@ -91,3 +91,38 @@ def test_normalize_body_line_supports_plain_and_structured_lines() -> None:
 
     assert normalized_plain == PdfBodyLine(text="Revenue")
     assert normalized_structured == structured
+
+
+def test_truncate_with_ellipsis_handles_small_limits() -> None:
+    assert _truncate_with_ellipsis("abcdef", max_chars=1) == "a"
+    assert _truncate_with_ellipsis("abcdef", max_chars=0) == ""
+    assert _truncate_with_ellipsis("abcdef", max_chars=2) == "ab"
+
+
+def test_lines_per_page_has_minimum_of_one() -> None:
+    writer = PdfWriter(config=PdfWriterConfig(margin_top=1000.0, margin_bottom=1000.0))
+    assert writer._lines_per_page(height=792.0) == 1
+
+
+def test_pdf_writer_renders_structured_body_rows(tmp_path: Path) -> None:
+    _ensure_reportlab_installed()
+
+    destination = tmp_path / "structured.pdf"
+    writer = PdfWriter()
+    body_lines = [
+        PdfBodyLine(text="Income", row_type="header"),
+        PdfBodyLine(text="Services", level=1, row_type="account"),
+        PdfBodyLine(text="Subtotal Income", level=1, row_type="subtotal"),
+        PdfBodyLine(text="Net Income", row_type="total"),
+    ]
+    result_path = writer.write_report(
+        destination,
+        company_name="Example Co",
+        report_title="Profit and Loss",
+        date_range_label="2025",
+        body_lines=body_lines,
+    )
+
+    assert result_path == destination
+    assert destination.exists()
+    assert destination.stat().st_size > 0

@@ -207,6 +207,8 @@ def _normalize_body_line(line: str | PdfBodyLine) -> PdfBodyLine:
 def _truncate_with_ellipsis(value: str, *, max_chars: int) -> str:
     if max_chars < 2:
         return value[:max(max_chars, 0)]
+    if max_chars <= 3:
+        return value[:max_chars]
     if len(value) <= max_chars:
         return value
     return f"{value[: max_chars - 3]}..."
