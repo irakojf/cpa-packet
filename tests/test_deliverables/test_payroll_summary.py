@@ -4,14 +4,28 @@ import json
 from decimal import Decimal
 from pathlib import Path
 
+from cpapacket.core.context import RunContext
+from cpapacket.core.metadata import read_deliverable_metadata
 from cpapacket.deliverables.payroll_summary import (
+    PayrollSummaryDeliverable,
     aggregate_employee_breakdowns,
     build_company_summary,
     normalize_employee_breakdowns,
     normalize_gusto_payload,
     normalize_payroll_runs,
     total_401k_contributions,
+    write_payroll_output_artifacts,
 )
+
+
+class _PayrollProvider:
+    def __init__(self, payroll_runs: list[dict[str, object]]) -> None:
+        self._payroll_runs = payroll_runs
+        self.calls: list[int] = []
+
+    def get_payroll_runs(self, year: int) -> list[dict[str, object]]:
+        self.calls.append(year)
+        return self._payroll_runs
 
 
 def _load_fixture() -> dict[str, object]:
@@ -167,3 +181,145 @@ def test_build_company_summary_excludes_employee_withholdings_from_payroll_cost(
     assert summary.employee_retirement_deferral_total == Decimal("1785.00")
     assert summary.employer_retirement_contribution_total == Decimal("1071.00")
     assert payroll_cost_total == Decimal("42476.00")
+
+
+def _run_context(
+    tmp_path: Path,
+    *,
+    no_raw: bool = False,
+    redact: bool = False,
+    gusto_available: bool = True,
+) -> RunContext:
+    return RunContext(
+        year=2025,
+        year_source="explicit",
+        out_dir=tmp_path,
+        non_interactive=True,
+        on_conflict="abort",
+        no_raw=no_raw,
+        redact=redact,
+        gusto_available=gusto_available,
+    )
+
+
+def test_payroll_summary_deliverable_generates_outputs_from_provider(tmp_path: Path) -> None:
+    payload = _load_fixture()
+    payrolls = payload["payrolls"]
+    assert isinstance(payrolls, list)
+    provider = _PayrollProvider(payrolls)
+    deliverable = PayrollSummaryDeliverable()
+
+    result = deliverable.generate(_run_context(tmp_path), provider, prompts={})
+
+    assert result.success is True
+    assert provider.calls == [2025]
+    assert result.warnings == []
+    assert any("04_Annual_Payroll_Summary/00_Company_Summary" in path for path in result.artifacts)
+    assert any(
+        "04_Annual_Payroll_Summary/Employees/Rivera_Alex_emp_emp-001" in path
+        for path in result.artifacts
+    )
+    assert any(path.endswith("payroll_summary_2025_metadata.json") for path in result.artifacts)
+
+
+def test_payroll_summary_deliverable_skips_when_gusto_unavailable(tmp_path: Path) -> None:
+    provider = _PayrollProvider([])
+    deliverable = PayrollSummaryDeliverable()
+
+    result = deliverable.generate(
+        _run_context(tmp_path, gusto_available=False),
+        provider,
+        prompts={},
+    )
+
+    assert result.success is True
+    assert result.artifacts == []
+    assert result.warnings == ["Skipped payroll summary; Gusto not connected."]
+    assert provider.calls == []
+
+
+def test_write_payroll_output_artifacts_writes_company_employee_and_private_metadata(
+    tmp_path: Path,
+) -> None:
+    payload = _load_fixture()
+    runs, employee_breakdowns = normalize_gusto_payload(payload)
+    summary, payroll_cost_total = build_company_summary(year=2025, payroll_runs=runs)
+
+    artifacts = write_payroll_output_artifacts(
+        ctx=_run_context(tmp_path),
+        company_summary=summary,
+        payroll_cost_total=payroll_cost_total,
+        payroll_runs=runs,
+        employee_breakdowns=employee_breakdowns,
+        raw_payload=payload,
+    )
+
+    artifact_paths = [Path(path) for path in artifacts]
+    for path in artifact_paths:
+        assert path.exists()
+
+    company_dir = tmp_path / "04_Annual_Payroll_Summary" / "00_Company_Summary"
+    assert (company_dir / "Annual_Payroll_Summary_2025.csv").exists()
+    assert (company_dir / "Annual_Payroll_Summary_2025.pdf").exists()
+    assert (company_dir / "Annual_Payroll_Summary_2025.raw.json").exists()
+
+    employee_file = (
+        tmp_path
+        / "04_Annual_Payroll_Summary"
+        / "Employees"
+        / "Rivera_Alex_emp_emp-001"
+        / "Payroll_Breakdown_Alex_Rivera_2025.csv"
+    )
+    assert employee_file.exists()
+
+    metadata_path = (
+        tmp_path / "_meta" / "private" / "deliverables" / "payroll_summary_2025_metadata.json"
+    )
+    metadata = read_deliverable_metadata(metadata_path)
+    assert metadata.deliverable == "payroll_summary_2025"
+    assert len(metadata.input_fingerprint) == 64
+    assert metadata.schema_versions == {"csv": "1.0"}
+    assert str(company_dir / "Annual_Payroll_Summary_2025.csv") in metadata.artifacts
+
+
+def test_write_payroll_output_artifacts_skips_raw_files_when_no_raw_true(tmp_path: Path) -> None:
+    payload = _load_fixture()
+    runs, employee_breakdowns = normalize_gusto_payload(payload)
+    summary, payroll_cost_total = build_company_summary(year=2025, payroll_runs=runs)
+
+    artifacts = write_payroll_output_artifacts(
+        ctx=_run_context(tmp_path, no_raw=True),
+        company_summary=summary,
+        payroll_cost_total=payroll_cost_total,
+        payroll_runs=runs,
+        employee_breakdowns=employee_breakdowns,
+        raw_payload=payload,
+    )
+
+    assert all(not artifact.endswith(".raw.json") for artifact in artifacts)
+
+
+def test_write_payroll_output_artifacts_redacts_company_raw_payload(tmp_path: Path) -> None:
+    payload = _load_fixture()
+    payload["access_token"] = "secret-token-value"
+
+    runs, employee_breakdowns = normalize_gusto_payload(payload)
+    summary, payroll_cost_total = build_company_summary(year=2025, payroll_runs=runs)
+
+    write_payroll_output_artifacts(
+        ctx=_run_context(tmp_path, redact=True),
+        company_summary=summary,
+        payroll_cost_total=payroll_cost_total,
+        payroll_runs=runs,
+        employee_breakdowns=employee_breakdowns,
+        raw_payload=payload,
+    )
+
+    company_raw_path = (
+        tmp_path
+        / "04_Annual_Payroll_Summary"
+        / "00_Company_Summary"
+        / "Annual_Payroll_Summary_2025.raw.json"
+    )
+    raw_payload = json.loads(company_raw_path.read_text(encoding="utf-8"))
+    assert raw_payload["access_token"] == "[REDACTED]"
