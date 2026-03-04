@@ -5,8 +5,9 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import IO, Literal, cast
 
+from cpapacket.core.filesystem import atomic_write
 from cpapacket.core.metadata import DeliverableMetadata, read_deliverable_metadata
 from cpapacket.deliverables.base import Deliverable
 from cpapacket.deliverables.registry import DELIVERABLE_REGISTRY, get_ordered_registry
@@ -42,6 +43,9 @@ class ValidationResult:
         for record in self.records:
             counts[record.status] = counts.get(record.status, 0) + 1
         return counts
+
+    def review_required(self) -> bool:
+        return any(record.status in {"missing", "incomplete"} for record in self.records)
 
 
 def validate_packet_deliverables(
@@ -111,6 +115,56 @@ def validate_packet_deliverables(
         )
 
     return ValidationResult(records=tuple(records))
+
+
+def render_validation_report(result: ValidationResult) -> str:
+    """Render a text validation summary suitable for ``_meta/public`` output."""
+    counts = result.counts_by_status()
+    lines: list[str] = [
+        "CPA Packet Validation Report",
+        "==========================",
+        "",
+        "Summary",
+        f"- Present: {counts.get('present', 0)}",
+        f"- Missing: {counts.get('missing', 0)}",
+        f"- Incomplete: {counts.get('incomplete', 0)}",
+        f"- Skipped: {counts.get('skipped', 0)}",
+        f"- Review Required: {'YES' if result.review_required() else 'NO'}",
+        "",
+        "Deliverables",
+    ]
+
+    for record in result.records:
+        lines.append(f"- {record.key} [{record.status.upper()}]")
+        if record.expected_patterns:
+            lines.append("  expected:")
+            lines.extend(f"  - {pattern}" for pattern in record.expected_patterns)
+        else:
+            lines.append("  expected: (none)")
+
+        if record.found_files:
+            lines.append("  found:")
+            lines.extend(f"  - {path}" for path in record.found_files)
+        else:
+            lines.append("  found: (none)")
+
+        if record.missing_patterns:
+            lines.append("  missing:")
+            lines.extend(f"  - {pattern}" for pattern in record.missing_patterns)
+            lines.append("  flag: REVIEW_REQUIRED")
+        lines.append("")
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def write_validation_report(*, output_root: Path | str, result: ValidationResult) -> Path:
+    """Write ``_meta/public/validation_report.txt`` atomically and return path."""
+    destination = Path(output_root) / "_meta" / "public" / "validation_report.txt"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    payload = render_validation_report(result)
+    with atomic_write(destination, mode="w", encoding="utf-8", newline="\n") as handle:
+        cast(IO[str], handle).write(payload)
+    return destination
 
 
 def _read_metadata_if_present(*, root: Path, deliverable_key: str) -> DeliverableMetadata | None:

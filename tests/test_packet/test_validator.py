@@ -7,7 +7,11 @@ from typing import Any, cast
 
 from cpapacket.core.metadata import DeliverableMetadata, write_deliverable_metadata
 from cpapacket.deliverables.base import Deliverable, DeliverableResult
-from cpapacket.packet.validator import validate_packet_deliverables
+from cpapacket.packet.validator import (
+    render_validation_report,
+    validate_packet_deliverables,
+    write_validation_report,
+)
 
 
 @dataclass(frozen=True)
@@ -161,3 +165,36 @@ def test_validate_packet_deliverables_uses_folder_regex_without_metadata(
     record = result.records[0]
     assert record.status == "incomplete"
     assert record.found_files == ("03_Full-Year_General_Ledger/general_ledger_2025.csv",)
+
+
+def test_render_validation_report_includes_counts_and_review_flags(tmp_path: Path) -> None:
+    root = tmp_path / "packet"
+    root.mkdir(parents=True, exist_ok=True)
+    result = validate_packet_deliverables(
+        packet_root=root,
+        registry=_registry(_FakeDeliverable(key="pnl", folder="01_Year-End_Profit_and_Loss")),
+    )
+
+    report = render_validation_report(result)
+
+    assert "CPA Packet Validation Report" in report
+    assert "Missing: 1" in report
+    assert "Review Required: YES" in report
+    assert "- pnl [MISSING]" in report
+
+
+def test_write_validation_report_outputs_meta_public_file(tmp_path: Path) -> None:
+    root = tmp_path / "packet"
+    root.mkdir(parents=True, exist_ok=True)
+    result = validate_packet_deliverables(
+        packet_root=root,
+        registry=_registry(_FakeDeliverable(key="pnl", folder="01_Year-End_Profit_and_Loss")),
+    )
+
+    report_path = write_validation_report(output_root=root, result=result)
+
+    assert report_path == root / "_meta" / "public" / "validation_report.txt"
+    assert report_path.exists()
+    text = report_path.read_text(encoding="utf-8")
+    assert "Deliverables" in text
+    assert "pnl" in text
