@@ -5,6 +5,7 @@ from typing import Any
 
 from cpapacket.clients.auth import OAuthToken
 from cpapacket.packet.doctor import (
+    run_gusto_connectivity_check,
     run_gusto_token_check,
     run_python_environment_check,
     run_qbo_connectivity_check,
@@ -181,3 +182,44 @@ def test_run_gusto_token_check_fails_when_refresh_probe_errors() -> None:
         result.guidance
         == "Run `cpapacket auth gusto login` to refresh credentials and retry doctor."
     )
+
+
+def test_run_gusto_connectivity_check_skips_when_token_not_configured() -> None:
+    result = run_gusto_connectivity_check(
+        load_token=lambda: None,
+        company_identity_probe=lambda: {"CompanyName": "Ignored"},
+    )
+
+    assert result.status == "pass"
+    assert result.summary == "Gusto connectivity check skipped (token not configured)."
+    assert "configured=false" in result.details
+
+
+def test_run_gusto_connectivity_check_passes_with_company_name() -> None:
+    token = _token_with_expiry(3600)
+    result = run_gusto_connectivity_check(
+        load_token=lambda: token,
+        company_identity_probe=lambda: {"CompanyName": "Acme Payroll"},
+    )
+
+    assert result.status == "pass"
+    assert result.summary == "Gusto connectivity check passed."
+    assert "company=Acme Payroll" in result.details
+    assert "identity_probe=ok" in result.details
+
+
+def test_run_gusto_connectivity_check_fails_when_probe_errors() -> None:
+    token = _token_with_expiry(3600)
+
+    def failing_probe() -> dict[str, object]:
+        raise RuntimeError("gusto timeout")
+
+    result = run_gusto_connectivity_check(
+        load_token=lambda: token,
+        company_identity_probe=failing_probe,
+    )
+
+    assert result.status == "fail"
+    assert result.summary == "Gusto connectivity check failed."
+    assert "probe_error=gusto timeout" in result.details
+    assert result.guidance == "Verify network/API access and rerun `cpapacket doctor`."

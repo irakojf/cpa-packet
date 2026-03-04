@@ -50,6 +50,11 @@ class QboCompanyInfoProbe(Protocol):
         """Fetch lightweight company info from QBO."""
 
 
+class GustoCompanyIdentityProbe(Protocol):
+    def __call__(self) -> dict[str, object]:
+        """Fetch lightweight company identity from Gusto."""
+
+
 def run_qbo_connectivity_check(
     *,
     company_info_probe: QboCompanyInfoProbe,
@@ -211,6 +216,45 @@ def run_gusto_token_check(
         status="pass",
         summary="Gusto token check passed.",
         details=[*details, f"seconds_to_expiry={age_seconds}", "refresh_probe=ok"],
+    )
+
+
+def run_gusto_connectivity_check(
+    *,
+    load_token: QboTokenLoader,
+    company_identity_probe: GustoCompanyIdentityProbe,
+) -> DoctorCheckResult:
+    """Validate optional Gusto API connectivity via lightweight identity fetch."""
+    token = load_token()
+    if token is None:
+        return DoctorCheckResult(
+            check_name="gusto_connectivity",
+            status="pass",
+            summary="Gusto connectivity check skipped (token not configured).",
+            details=["configured=false"],
+            guidance="Run `cpapacket auth gusto login` to enable Gusto-backed checks.",
+        )
+
+    details = [f"expires_at={token.expires_at.astimezone(UTC).isoformat()}"]
+    try:
+        identity_payload = company_identity_probe()
+    except Exception as exc:
+        return DoctorCheckResult(
+            check_name="gusto_connectivity",
+            status="fail",
+            summary="Gusto connectivity check failed.",
+            details=[*details, f"probe_error={exc}"],
+            guidance="Verify network/API access and rerun `cpapacket doctor`.",
+        )
+
+    company_name = _extract_company_name(identity_payload)
+    if company_name:
+        details.append(f"company={company_name}")
+    return DoctorCheckResult(
+        check_name="gusto_connectivity",
+        status="pass",
+        summary="Gusto connectivity check passed.",
+        details=[*details, "identity_probe=ok"],
     )
 
 
