@@ -1,0 +1,95 @@
+from __future__ import annotations
+
+import threading
+import time
+
+import pytest
+
+from cpapacket.data.store import SessionDataStore
+
+
+def test_set_get_has_and_clear() -> None:
+    store = SessionDataStore()
+
+    assert store.has("qbo:pnl:2025") is False
+    assert store.get("qbo:pnl:2025") is None
+
+    payload = {"rows": 3}
+    store.set("qbo:pnl:2025", payload)
+
+    assert store.has("qbo:pnl:2025") is True
+    assert store.get("qbo:pnl:2025") == payload
+
+    store.clear()
+    assert store.get("qbo:pnl:2025") is None
+
+
+def test_get_or_fetch_caches_subsequent_calls() -> None:
+    store = SessionDataStore()
+    calls = 0
+
+    def fetcher() -> dict[str, int]:
+        nonlocal calls
+        calls += 1
+        return {"value": 42}
+
+    first, first_source = store.get_or_fetch("qbo:pnl:2025", fetcher)
+    second, second_source = store.get_or_fetch("qbo:pnl:2025", fetcher)
+
+    assert first == {"value": 42}
+    assert second == {"value": 42}
+    assert first_source == "api"
+    assert second_source == "cache"
+    assert calls == 1
+
+
+def test_get_or_fetch_coalesces_concurrent_requests() -> None:
+    store = SessionDataStore()
+    started = threading.Event()
+    release = threading.Event()
+    calls = 0
+
+    def fetcher() -> dict[str, int]:
+        nonlocal calls
+        calls += 1
+        started.set()
+        release.wait(timeout=2)
+        return {"value": 99}
+
+    results: list[tuple[dict[str, int], str]] = []
+
+    def worker() -> None:
+        results.append(store.get_or_fetch("qbo:bs:2025", fetcher))
+
+    t1 = threading.Thread(target=worker)
+    t2 = threading.Thread(target=worker)
+    t1.start()
+    started.wait(timeout=2)
+    t2.start()
+    time.sleep(0.05)
+    release.set()
+    t1.join(timeout=2)
+    t2.join(timeout=2)
+
+    assert calls == 1
+    assert len(results) == 2
+    assert sorted(source for _, source in results) == ["api", "cache"]
+    assert all(value == {"value": 99} for value, _ in results)
+
+
+def test_get_or_fetch_does_not_cache_failures() -> None:
+    store = SessionDataStore()
+    calls = 0
+
+    def boom() -> dict[str, int]:
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("upstream failed")
+
+    with pytest.raises(RuntimeError, match="upstream failed"):
+        store.get_or_fetch("qbo:pnl:2025", boom)
+
+    with pytest.raises(RuntimeError, match="upstream failed"):
+        store.get_or_fetch("qbo:pnl:2025", boom)
+
+    assert calls == 2
