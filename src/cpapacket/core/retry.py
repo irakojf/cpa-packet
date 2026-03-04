@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import random
 import time
-from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from typing import Any, Protocol, TypeVar
+from typing import Any, Callable, Mapping, Protocol, TypeVar
 
-from cpapacket.utils.constants import RETRY_MAX_5XX, RETRY_MAX_429
+from cpapacket.utils.constants import RETRY_MAX_429, RETRY_MAX_5XX
 
 T = TypeVar("T", bound="ResponseLike")
 
@@ -34,8 +33,7 @@ class RetryExhaustedError(RuntimeError):
     """Raised when retries are exhausted for retryable responses."""
 
     def __init__(self, status_code: int, attempts: int) -> None:
-        msg = f"retry budget exhausted for status={status_code} after {attempts} attempts"
-        super().__init__(msg)
+        super().__init__(f"retry budget exhausted for status={status_code} after {attempts} attempts")
         self.status_code = status_code
         self.attempts = attempts
 
@@ -63,9 +61,9 @@ def parse_retry_after(header_value: str | None, *, now: datetime | None = None) 
         return None
 
     if when.tzinfo is None:
-        when = when.replace(tzinfo=UTC)
+        when = when.replace(tzinfo=timezone.utc)
 
-    reference = now or datetime.now(UTC)
+    reference = now or datetime.now(timezone.utc)
     delta = (when - reference).total_seconds()
     return max(delta, 0.0)
 

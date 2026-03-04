@@ -52,11 +52,7 @@ class MiscodeDetector:
                 reason_codes.append(_REASON_R2)
                 score += 2
 
-            if (
-                _looks_like_transfer_from_bank(row)
-                and is_non_equity
-                and amount > MISCODE_HIGH_AMOUNT_THRESHOLD
-            ):
+            if _looks_like_transfer_from_bank(row) and is_non_equity and amount > MISCODE_HIGH_AMOUNT_THRESHOLD:
                 reason_codes.append(_REASON_R3)
                 score += 2
 

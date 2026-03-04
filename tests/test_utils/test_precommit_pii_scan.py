@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 
 import pytest
+
 from scripts import precommit_pii_scan
 
 

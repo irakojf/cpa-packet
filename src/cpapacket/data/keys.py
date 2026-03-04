@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from hashlib import sha256
 from typing import Any
@@ -44,8 +44,8 @@ def _normalize_value(value: Any) -> Any:
         return [_normalize_value(item) for item in value]
 
     if isinstance(value, datetime):
-        dt = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
-        return dt.astimezone(UTC).isoformat().replace("+00:00", "Z")
+        dt = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
     if isinstance(value, date):
         return value.isoformat()
@@ -77,5 +77,5 @@ def _normalize_date_string(value: str) -> str:
         return stripped
 
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
-    return dt.astimezone(UTC).isoformat().replace("+00:00", "Z")
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")

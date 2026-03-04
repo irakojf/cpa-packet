@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, TextIO, cast
+from typing import Any
 
 from cpapacket.core.filesystem import atomic_write
 
@@ -51,7 +51,7 @@ class CsvWriter:
             newline="",
         ) as handle:
             writer = csv.DictWriter(
-                cast(TextIO, handle),
+                handle,
                 fieldnames=normalized_headers,
                 quoting=csv.QUOTE_MINIMAL,
                 delimiter=self._config.delimiter,
@@ -92,7 +92,7 @@ class CsvWriter:
             newline="",
         ) as handle:
             writer = csv.DictWriter(
-                cast(TextIO, handle),
+                handle,
                 fieldnames=normalized_headers,
                 quoting=csv.QUOTE_MINIMAL,
                 delimiter=self._config.delimiter,

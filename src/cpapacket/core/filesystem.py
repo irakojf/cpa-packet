@@ -6,7 +6,7 @@ import os
 import re
 import tempfile
 from collections.abc import Iterator
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from pathlib import Path
 from typing import IO
 
@@ -54,8 +54,10 @@ def atomic_write(
         replaced = True
     finally:
         if not replaced:
-            with suppress(FileNotFoundError):
+            try:
                 os.unlink(tmp_name)
+            except FileNotFoundError:
+                pass
 
 
 def sanitize_filesystem_name(value: str) -> str:

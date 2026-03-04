@@ -204,3 +204,44 @@ def test_provider_propagates_qbo_payload_type_error() -> None:
 
     with pytest.raises(TypeError, match="payload must be an object"):
         providers.get_pnl(2025, "Accrual")
+
+
+def test_get_pnl_integration_cache_hit_avoids_duplicate_http_calls() -> None:
+    httpx = pytest.importorskip("httpx")
+    respx = pytest.importorskip("respx")
+
+    class _HttpQboClient:
+        def __init__(self, client: Any) -> None:
+            self._client = client
+
+        def request(
+            self,
+            method: str,
+            endpoint: str,
+            *,
+            params: dict[str, Any] | None = None,
+            json_body: dict[str, Any] | None = None,
+        ) -> object:
+            return self._client.request(
+                method,
+                f"https://api.example.test{endpoint}",
+                params=params,
+                json=json_body,
+            )
+
+    store = SessionDataStore()
+    with httpx.Client() as client:
+        qbo = _HttpQboClient(client)
+        providers = DataProviders(store=store, qbo_client=qbo)
+
+        with respx.mock(assert_all_called=True) as router:
+            route = router.get("https://api.example.test/reports/ProfitAndLoss").mock(
+                return_value=httpx.Response(200, json={"Rows": {"Row": []}}),
+            )
+
+            first = providers.get_pnl(2025, "Accrual")
+            second = providers.get_pnl(2025, "Accrual")
+
+    assert first == {"Rows": {"Row": []}}
+    assert second == first
+    assert route.call_count == 1

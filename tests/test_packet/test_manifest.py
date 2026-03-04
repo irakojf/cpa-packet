@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from cpapacket.packet.manifest import DeliverableManifestEntry, write_packet_manifest
 
 
 def test_write_packet_manifest_creates_expected_file(tmp_path: Path) -> None:
-    started_at = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
-    finished_at = datetime(2026, 1, 1, 12, 5, tzinfo=UTC)
+    started_at = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    finished_at = datetime(2026, 1, 1, 12, 5, tzinfo=timezone.utc)
 
     entries = [
         DeliverableManifestEntry(

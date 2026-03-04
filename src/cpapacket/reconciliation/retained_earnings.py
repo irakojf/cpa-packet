@@ -106,9 +106,7 @@ def integrate_miscoded_distributions(
     csv_path = distributions_dir / f"likely_miscoded_distributions_{year}.csv"
 
     if csv_path.exists():
-        return ReMiscodingIntegrationResult(
-            candidates=candidates, csv_path=csv_path, wrote_csv=False
-        )
+        return ReMiscodingIntegrationResult(candidates=candidates, csv_path=csv_path, wrote_csv=False)
 
     _write_likely_miscoded_csv(csv_path, candidates)
     return ReMiscodingIntegrationResult(candidates=candidates, csv_path=csv_path, wrote_csv=True)

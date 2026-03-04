@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 import pytest
@@ -50,7 +50,7 @@ def test_build_cache_key_changes_on_distinct_inputs() -> None:
 def test_canonical_json_normalizes_dates_and_datetimes() -> None:
     payload = {
         "as_of": date(2025, 12, 31),
-        "fetched_at": datetime(2026, 1, 1, 3, 0, tzinfo=UTC),
+        "fetched_at": datetime(2026, 1, 1, 3, 0, tzinfo=timezone.utc),
         "decimal_value": Decimal("12.30"),
         "start": "2025-12-31",
         "instant": "2026-01-01T03:00:00+00:00",
