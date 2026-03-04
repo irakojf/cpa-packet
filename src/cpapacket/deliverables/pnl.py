@@ -17,6 +17,16 @@ from cpapacket.utils.constants import DELIVERABLE_FOLDERS, SCHEMA_VERSIONS
 from cpapacket.writers.csv_writer import CsvWriter
 
 _DEFAULT_SECTION = "Uncategorized"
+_REDACTED_VALUE = "[REDACTED]"
+_SENSITIVE_JSON_KEYS = {
+    "access_token",
+    "refresh_token",
+    "token",
+    "secret",
+    "api_key",
+    "ssn",
+    "ein",
+}
 _SECTION_MAP = {
     "income": "Income",
     "cost of goods sold": "COGS",
@@ -216,6 +226,7 @@ class PnlDeliverable:
         method: str = "accrual",
         on_conflict: str = "abort",
         no_raw: bool = False,
+        redact: bool = False,
     ) -> PnlDeliverableResult:
         warnings: list[str] = []
 
@@ -244,7 +255,8 @@ class PnlDeliverable:
         _write_csv(csv_path, rows)
         _write_pdf(pdf_path, rows, year)
         if json_path is not None:
-            _write_json(json_path, report_payload)
+            payload_to_write = _redact_payload(report_payload) if redact else report_payload
+            _write_json(json_path, payload_to_write)
         _write_metadata(
             path=metadata_path,
             key=self.key,
@@ -330,6 +342,25 @@ def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
         json.dump(payload, tmp_file, indent=2, sort_keys=True)
         tmp_name = tmp_file.name
     Path(tmp_name).replace(path)
+
+
+def _redact_payload(payload: Mapping[str, Any]) -> Mapping[str, Any]:
+    return _redact_value(payload)
+
+
+def _redact_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        redacted: dict[str, Any] = {}
+        for key, nested in value.items():
+            key_lower = str(key).strip().lower()
+            if key_lower in _SENSITIVE_JSON_KEYS:
+                redacted[str(key)] = _REDACTED_VALUE
+                continue
+            redacted[str(key)] = _redact_value(nested)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_value(item) for item in value]
+    return value
 
 
 def _write_metadata(
