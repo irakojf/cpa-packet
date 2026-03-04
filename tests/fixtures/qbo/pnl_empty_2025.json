@@ -1,0 +1,24 @@
+{
+  "Header": {
+    "ReportName": "ProfitAndLoss",
+    "StartPeriod": "2025-01-01",
+    "EndPeriod": "2025-12-31",
+    "SummarizeColumnsBy": "Total",
+    "Currency": "USD"
+  },
+  "Columns": {
+    "Column": [
+      {
+        "ColTitle": "Account",
+        "ColType": "String"
+      },
+      {
+        "ColTitle": "Total",
+        "ColType": "Money"
+      }
+    ]
+  },
+  "Rows": {
+    "Row": []
+  }
+}
