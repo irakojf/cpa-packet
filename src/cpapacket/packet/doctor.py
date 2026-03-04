@@ -5,8 +5,11 @@ from __future__ import annotations
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from importlib.util import find_spec
-from typing import Literal
+from typing import Literal, Protocol
+
+from cpapacket.clients.auth import OAuthToken
 
 CheckStatus = Literal["pass", "fail"]
 
@@ -30,6 +33,16 @@ class DoctorCheckResult:
     summary: str
     details: list[str] = field(default_factory=list)
     guidance: str | None = None
+
+
+class QboTokenLoader(Protocol):
+    def __call__(self) -> OAuthToken | None:
+        """Load the currently stored QBO token."""
+
+
+class QboTokenRefreshProbe(Protocol):
+    def __call__(self, refresh_token: str) -> OAuthToken:
+        """Validate refresh token flow and return refreshed token."""
 
 
 def run_python_environment_check(
@@ -74,4 +87,48 @@ def run_python_environment_check(
             f"runtime={runtime_label}",
             f"required_modules={len(required_modules)}",
         ],
+    )
+
+
+def run_qbo_token_check(
+    *,
+    load_token: QboTokenLoader,
+    refresh_probe: QboTokenRefreshProbe,
+    expiry_leeway_seconds: int = 60,
+) -> DoctorCheckResult:
+    """Validate QBO token presence, expiry, and refresh flow."""
+    token = load_token()
+    if token is None:
+        return DoctorCheckResult(
+            check_name="qbo_token",
+            status="fail",
+            summary="QBO token not found.",
+            details=[],
+            guidance="Run `cpapacket auth qbo login` and rerun `cpapacket doctor`.",
+        )
+
+    now = datetime.now(UTC)
+    details = [f"expires_at={token.expires_at.astimezone(UTC).isoformat()}"]
+    if token.is_expired(leeway_seconds=expiry_leeway_seconds):
+        details.append("expired=true")
+    else:
+        details.append("expired=false")
+
+    try:
+        refresh_probe(token.refresh_token)
+    except Exception as exc:
+        return DoctorCheckResult(
+            check_name="qbo_token",
+            status="fail",
+            summary="QBO token refresh probe failed.",
+            details=[*details, f"refresh_error={exc}"],
+            guidance="Re-authenticate with `cpapacket auth qbo login` and retry doctor.",
+        )
+
+    age_seconds = int((token.expires_at.astimezone(UTC) - now).total_seconds())
+    return DoctorCheckResult(
+        check_name="qbo_token",
+        status="pass",
+        summary="QBO token check passed.",
+        details=[*details, f"seconds_to_expiry={age_seconds}", "refresh_probe=ok"],
     )
