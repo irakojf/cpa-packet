@@ -133,3 +133,74 @@ def test_get_general_ledger_rejects_invalid_month() -> None:
 
     with pytest.raises(ValueError, match="month must be between 1 and 12"):
         providers.get_general_ledger(2025, 13)
+
+
+def test_get_accounts_and_company_info_use_expected_endpoints() -> None:
+    store = SessionDataStore()
+    qbo = _FakeQboClient()
+    providers = DataProviders(store=store, qbo_client=qbo)
+
+    accounts = providers.get_accounts()
+    company = providers.get_company_info()
+
+    assert accounts["endpoint"] == "/query"
+    assert accounts["params"]["query"] == "select * from Account"
+    assert company["endpoint"] == "/companyinfo"
+    assert company["params"] == {}
+
+
+def test_provider_layer_generates_cache_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    store = SessionDataStore()
+    qbo = _FakeQboClient()
+    providers = DataProviders(store=store, qbo_client=qbo)
+    calls: list[dict[str, Any]] = []
+
+    def fake_build_cache_key(
+        *,
+        source: str,
+        endpoint: str,
+        params: dict[str, Any],
+        schema: str,
+        cache_version: str,
+    ) -> str:
+        calls.append(
+            {
+                "source": source,
+                "endpoint": endpoint,
+                "params": params,
+                "schema": schema,
+                "cache_version": cache_version,
+            }
+        )
+        return f"fake:{source}:{endpoint}:{schema}"
+
+    monkeypatch.setattr("cpapacket.data.providers.build_cache_key", fake_build_cache_key)
+    providers.get_pnl(2025, "Accrual")
+    providers.get_company_info()
+
+    assert calls[0]["source"] == "qbo"
+    assert calls[0]["endpoint"] == "/reports/ProfitAndLoss"
+    assert calls[0]["schema"] == "qbo.pnl.v1"
+    assert calls[1]["endpoint"] == "/companyinfo"
+    assert calls[1]["schema"] == "qbo.company_info.v1"
+
+
+def test_provider_propagates_qbo_payload_type_error() -> None:
+    class _InvalidQboClient(_FakeQboClient):
+        def request(
+            self,
+            method: str,
+            endpoint: str,
+            *,
+            params: dict[str, Any] | None = None,
+            json_body: dict[str, Any] | None = None,
+        ) -> _FakeResponse:
+            del method, endpoint, params, json_body
+            return _FakeResponse(["not-a-dict"])
+
+    store = SessionDataStore()
+    qbo = _InvalidQboClient()
+    providers = DataProviders(store=store, qbo_client=qbo)
+
+    with pytest.raises(TypeError, match="payload must be an object"):
+        providers.get_pnl(2025, "Accrual")
