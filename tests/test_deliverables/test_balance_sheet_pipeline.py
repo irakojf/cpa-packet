@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 from pathlib import Path
 from typing import Any
@@ -95,15 +96,9 @@ def test_balance_sheet_pipeline_generates_outputs_and_metadata(
             )
             result = deliverable.generate(_run_context(tmp_path), providers, prompts={})
 
-    csv_path = (
-        tmp_path / "02_Year-End_Balance_Sheet" / "Balance_Sheet_2025-12-31.csv"
-    )
-    pdf_path = (
-        tmp_path / "02_Year-End_Balance_Sheet" / "Balance_Sheet_2025-12-31.pdf"
-    )
-    raw_path = (
-        tmp_path / "02_Year-End_Balance_Sheet" / "Balance_Sheet_2025-12-31_raw.json"
-    )
+    csv_path = tmp_path / "02_Year-End_Balance_Sheet" / "Balance_Sheet_2025-12-31.csv"
+    pdf_path = tmp_path / "02_Year-End_Balance_Sheet" / "Balance_Sheet_2025-12-31.pdf"
+    raw_path = tmp_path / "02_Year-End_Balance_Sheet" / "Balance_Sheet_2025-12-31_raw.json"
     meta_path = tmp_path / "_meta" / "balance_sheet_metadata.json"
 
     assert route.call_count == 1
@@ -112,6 +107,12 @@ def test_balance_sheet_pipeline_generates_outputs_and_metadata(
     assert raw_path.exists()
     assert meta_path.exists()
     assert result.success
+    with csv_path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        assert reader.fieldnames == ["section", "level", "row_type", "label", "amount", "path"]
+        first_row = next(reader, None)
+    assert first_row is not None
+    assert first_row["section"] == "Assets"
 
     metadata = json.loads(meta_path.read_text(encoding="utf-8"))
     assert metadata["deliverable"] == "balance_sheet"
