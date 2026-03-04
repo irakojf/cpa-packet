@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import gzip
+import json
 import threading
 import time
+from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
@@ -93,3 +97,52 @@ def test_get_or_fetch_does_not_cache_failures() -> None:
         store.get_or_fetch("qbo:pnl:2025", boom)
 
     assert calls == 2
+
+
+def test_set_writes_gzip_payload_and_meta(tmp_path: Path) -> None:
+    cache_dir = tmp_path / "_meta" / "private" / "cache"
+    store = SessionDataStore(cache_dir=cache_dir)
+
+    store.set("abc123", {"rows": 2, "source": "qbo"})
+
+    payload_path = cache_dir / "abc123.json.gz"
+    meta_path = cache_dir / "abc123.meta.json"
+    assert payload_path.exists()
+    assert meta_path.exists()
+
+    with gzip.open(payload_path, mode="rt", encoding="utf-8") as handle:
+        assert json.load(handle) == {"rows": 2, "source": "qbo"}
+
+    metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+    assert metadata["cache_key"] == "abc123"
+    assert metadata["ttl_seconds"] > 0
+
+
+def test_store_warms_memory_cache_from_disk_on_init(tmp_path: Path) -> None:
+    cache_dir = tmp_path / "_meta" / "private" / "cache"
+    seed = SessionDataStore(cache_dir=cache_dir)
+    seed.set("warm-key", {"value": 7})
+
+    warmed = SessionDataStore(cache_dir=cache_dir)
+    assert warmed.has("warm-key") is True
+    assert warmed.get("warm-key") == {"value": 7}
+
+
+def test_expired_disk_entries_are_ignored(tmp_path: Path) -> None:
+    cache_dir = tmp_path / "_meta" / "private" / "cache"
+
+    def old_now() -> datetime:
+        return datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+
+    def fresh_now() -> datetime:
+        return datetime(2026, 1, 1, 3, 0, tzinfo=UTC)
+
+    store = SessionDataStore(cache_dir=cache_dir, ttl_hours=1, now_provider=old_now)
+    store.set("expiring-key", {"value": 1})
+
+    reloaded = SessionDataStore(cache_dir=cache_dir, ttl_hours=1, now_provider=fresh_now)
+    assert reloaded.get("expiring-key") is None
+
+    value, source = reloaded.get_or_fetch("expiring-key", lambda: {"value": 2})
+    assert value == {"value": 2}
+    assert source == "api"
