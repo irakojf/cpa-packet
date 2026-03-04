@@ -108,6 +108,20 @@ def test_sanitize_filesystem_name_defaults_for_blank_values() -> None:
     assert sanitize_filesystem_name("////") == "untitled"
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("ACME   Holdings", "ACME_Holdings"),
+        ("name__with___underscores", "name_with_underscores"),
+        ("Café Déjà Vu", "Café_Déjà_Vu"),
+        ("x" * 512, "x" * 512),
+        ("/\\:*?\"<>|", "untitled"),
+    ],
+)
+def test_sanitize_filesystem_name_edge_cases(raw: str, expected: str) -> None:
+    assert sanitize_filesystem_name(raw) == expected
+
+
 def test_ensure_directory_creates_parents(tmp_path: Path) -> None:
     target = tmp_path / "a" / "b" / "c"
     resolved = ensure_directory(target)
