@@ -5,8 +5,10 @@ from pathlib import Path
 
 from click.testing import CliRunner
 
+from cpapacket.cli import pnl as pnl_cli
 from cpapacket.cli.main import build_run_context, cli
 from cpapacket.clients.auth import OAuthToken
+from cpapacket.deliverables.base import DeliverableResult
 
 
 def test_build_run_context_defaults_on_conflict_by_interactive_mode() -> None:
@@ -346,6 +348,81 @@ def test_auth_gusto_status_reports_not_configured(monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert "not configured" in result.output
+
+
+def test_pnl_command_runs_deliverable_and_prints_artifacts(monkeypatch) -> None:
+    class _FakeStore:
+        def __init__(self, *, cache_dir: Path) -> None:
+            self.cache_dir = cache_dir
+
+    class _FakeProviders:
+        def __init__(self, *, store: _FakeStore, qbo_client: object) -> None:
+            self.store = store
+            self.qbo_client = qbo_client
+
+    class _FakeDeliverable:
+        def generate(
+            self,
+            _ctx: object,
+            _store: object,
+            prompts: dict[str, object],
+        ) -> DeliverableResult:
+            assert prompts == {}
+            return DeliverableResult(
+                deliverable_key="pnl",
+                success=True,
+                artifacts=["/tmp/packet/Profit_and_Loss_2025.csv"],
+                warnings=["P&L report normalized to zero rows."],
+            )
+
+    monkeypatch.setattr(pnl_cli, "SessionDataStore", _FakeStore)
+    monkeypatch.setattr(pnl_cli, "DataProviders", _FakeProviders)
+    monkeypatch.setattr(pnl_cli, "PnlDeliverable", lambda: _FakeDeliverable())
+    monkeypatch.setattr(pnl_cli, "_build_qbo_client", lambda: object())
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["--year", "2025", "pnl"])
+
+    assert result.exit_code == 0
+    assert "P&L deliverable complete." in result.output
+    assert "/tmp/packet/Profit_and_Loss_2025.csv" in result.output
+    assert "WARNING: P&L report normalized to zero rows." in result.output
+
+
+def test_pnl_command_surfaces_deliverable_errors(monkeypatch) -> None:
+    class _FakeStore:
+        def __init__(self, *, cache_dir: Path) -> None:
+            self.cache_dir = cache_dir
+
+    class _FakeProviders:
+        def __init__(self, *, store: _FakeStore, qbo_client: object) -> None:
+            self.store = store
+            self.qbo_client = qbo_client
+
+    class _FailingDeliverable:
+        def generate(
+            self,
+            _ctx: object,
+            _store: object,
+            prompts: dict[str, object],
+        ) -> DeliverableResult:
+            assert prompts == {}
+            return DeliverableResult(
+                deliverable_key="pnl",
+                success=False,
+                error="QBO token missing",
+            )
+
+    monkeypatch.setattr(pnl_cli, "SessionDataStore", _FakeStore)
+    monkeypatch.setattr(pnl_cli, "DataProviders", _FakeProviders)
+    monkeypatch.setattr(pnl_cli, "PnlDeliverable", lambda: _FailingDeliverable())
+    monkeypatch.setattr(pnl_cli, "_build_qbo_client", lambda: object())
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["--year", "2025", "pnl"])
+
+    assert result.exit_code != 0
+    assert "QBO token missing" in result.output
 
 
 def test_auth_gusto_status_reports_active_and_expired(monkeypatch) -> None:

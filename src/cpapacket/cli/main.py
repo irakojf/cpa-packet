@@ -10,6 +10,7 @@ from typing import Any, Literal, cast
 
 import click
 
+from cpapacket.cli.pnl import register_pnl_command
 from cpapacket.clients.auth import OAuthTokenStore
 from cpapacket.clients.gusto import GustoOAuthClient, GustoOAuthConfig
 from cpapacket.clients.qbo import QboOAuthClient, QboOAuthConfig
@@ -194,6 +195,9 @@ def cli(
 
     ctx.ensure_object(dict)
     ctx.obj["run_context"] = run_context
+
+
+register_pnl_command(cli)
 
 
 @cli.command("context-debug")
