@@ -66,3 +66,47 @@ def test_contractor_record_defaults_flags_to_empty_list() -> None:
     )
 
     assert record.flags == []
+
+
+def test_contractor_record_preserves_requires_1099_review_state() -> None:
+    flagged = ContractorRecord(
+        vendor_id="ven-flagged",
+        display_name="Flagged Vendor",
+        tax_id_on_file=False,
+        total_paid=Decimal("700.00"),
+        card_processor_total=Decimal("50.00"),
+        non_card_total=Decimal("650.00"),
+        requires_1099_review=True,
+        flags=["requires_1099_review"],
+    )
+    unflagged = ContractorRecord(
+        vendor_id="ven-clear",
+        display_name="Clear Vendor",
+        tax_id_on_file=True,
+        total_paid=Decimal("550.00"),
+        card_processor_total=Decimal("550.00"),
+        non_card_total=Decimal("0.00"),
+        requires_1099_review=False,
+        flags=[],
+    )
+
+    assert flagged.requires_1099_review is True
+    assert flagged.flags == ["requires_1099_review"]
+    assert unflagged.requires_1099_review is False
+    assert unflagged.flags == []
+
+
+def test_contractor_record_is_frozen_immutable() -> None:
+    record = ContractorRecord(
+        vendor_id="ven-immutable",
+        display_name="Immutable Vendor",
+        tax_id_on_file=False,
+        total_paid=Decimal("100.00"),
+        card_processor_total=Decimal("0.00"),
+        non_card_total=Decimal("100.00"),
+        requires_1099_review=False,
+        flags=[],
+    )
+
+    with pytest.raises(ValidationError):
+        record.non_card_total = Decimal("120.00")
