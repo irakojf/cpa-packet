@@ -173,6 +173,16 @@ def test_request_retries_once_after_401() -> None:
             },
         )
     )
+    http_client.post_queue.append(
+        FakeResponse(
+            200,
+            {
+                "access_token": "fresh-access",
+                "refresh_token": "fresh-refresh",
+                "expires_in": 3600,
+            },
+        )
+    )
     http_client.request_queue.append(FakeResponse(401, {}))
     http_client.request_queue.append(FakeResponse(200, {"ok": True}))
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from decimal import ROUND_HALF_UP, Decimal
+from typing import Literal
 
 from cpapacket.models.distributions import MiscodedDistributionCandidate
 from cpapacket.models.general_ledger import GeneralLedgerRow
@@ -22,6 +23,7 @@ _REASON_R4 = "R4_ROUND_NUMBER_OWNER"
 _REASON_R5 = "R5_HIGH_AMOUNT"
 
 _MEMO_KEYWORDS = ("distribution", "owner draw", "reimbursement", "personal", "transfer")
+_EQUITY_HINTS = ("equity", "distribution", "draw", "shareholder")
 
 
 class MiscodeDetector:
@@ -52,7 +54,11 @@ class MiscodeDetector:
                 reason_codes.append(_REASON_R2)
                 score += 2
 
-            if _looks_like_transfer_from_bank(row) and is_non_equity and amount > MISCODE_HIGH_AMOUNT_THRESHOLD:
+            if (
+                _looks_like_transfer_from_bank(row)
+                and is_non_equity
+                and amount > MISCODE_HIGH_AMOUNT_THRESHOLD
+            ):
                 reason_codes.append(_REASON_R3)
                 score += 2
 
@@ -102,7 +108,7 @@ def _is_expense_account(row: GeneralLedgerRow) -> bool:
 def _is_equity_account(row: GeneralLedgerRow) -> bool:
     account_type = row.account_type.lower()
     account_name = row.account_name.lower()
-    return "equity" in account_type or "equity" in account_name
+    return any(hint in account_type or hint in account_name for hint in _EQUITY_HINTS)
 
 
 def _is_owner_or_shareholder_payee(row: GeneralLedgerRow, owner_tokens: tuple[str, ...]) -> bool:
@@ -133,7 +139,7 @@ def _is_round_number(amount: Decimal) -> bool:
     return amount % divisor == Decimal("0")
 
 
-def _confidence_label(score: int) -> str:
+def _confidence_label(score: int) -> Literal["High", "Medium", "Low"]:
     if score >= MISCODE_CONFIDENCE_HIGH:
         return "High"
     if score >= MISCODE_CONFIDENCE_MEDIUM:

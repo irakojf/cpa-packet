@@ -10,13 +10,14 @@ from cpapacket.deliverables.payroll_summary import (
     PayrollSummaryDeliverable,
     aggregate_employee_breakdowns,
     build_company_summary,
-    detect_payroll_soft_flags,
     normalize_employee_breakdowns,
     normalize_gusto_payload,
     normalize_payroll_runs,
     total_401k_contributions,
     write_payroll_output_artifacts,
+    _collect_soft_flags,
 )
+from cpapacket.models.payroll import CompanyPayrollSummary
 
 
 class _PayrollProvider:
@@ -136,47 +137,6 @@ def test_normalize_employee_breakdowns_uses_explicit_employee_taxes_when_present
     assert rows[0].employer_taxes == Decimal("9.25")
 
 
-def test_detect_payroll_soft_flags_emits_officer_low_wage_and_negative_warnings() -> None:
-    raw_runs = [
-        {
-            "uuid": "run-soft-flags",
-            "pay_period_start_date": "2025-01-01",
-            "pay_period_end_date": "2025-01-15",
-            "check_date": "2025-01-20",
-            "totals": {
-                "gross_pay": "0.00",
-                "employee_taxes": "-10.00",
-                "employer_taxes": "0.00",
-            },
-            "employee_compensations": [
-                {
-                    "employee_uuid": "emp-off",
-                    "employee_name": "Pat Officer",
-                    "is_officer": True,
-                    "regular_pay": "-100.00",
-                    "bonus_pay": "0.00",
-                    "overtime_pay": "0.00",
-                    "employee_401k": "50.00",
-                    "employer_401k": "25.00",
-                }
-            ],
-        }
-    ]
-
-    employee_rows = normalize_employee_breakdowns(raw_runs)
-    warnings = detect_payroll_soft_flags(raw_runs=raw_runs, employee_breakdowns=employee_rows)
-
-    assert any(
-        "Negative payroll amounts detected and treated as 0.00" in warning
-        for warning in warnings
-    )
-    assert any("Officer wages are 0.00 for: Pat Officer" in warning for warning in warnings)
-    assert any(
-        "Retirement contributions present with unusually low gross wages" in warning
-        for warning in warnings
-    )
-
-
 def test_normalize_gusto_payload_handles_missing_payrolls_key() -> None:
     runs, rows = normalize_gusto_payload({})
     assert runs == []
@@ -225,6 +185,46 @@ def test_build_company_summary_excludes_employee_withholdings_from_payroll_cost(
     assert payroll_cost_total == Decimal("42476.00")
 
 
+def test_collect_soft_flags_empty_when_no_runs() -> None:
+    summary = CompanyPayrollSummary(
+        year=2025,
+        run_count=0,
+        wages_total=Decimal("0.00"),
+        employee_taxes_total=Decimal("0.00"),
+        employer_taxes_total=Decimal("0.00"),
+        employee_retirement_deferral_total=Decimal("0.00"),
+        employer_retirement_contribution_total=Decimal("0.00"),
+    )
+
+    warnings = _collect_soft_flags(raw_runs=[], company_summary=summary, payroll_cost_total=Decimal("0.00"))
+
+    assert warnings == []
+
+
+def test_collect_soft_flags_reports_threshold_and_negative_conditions() -> None:
+    summary = CompanyPayrollSummary(
+        year=2025,
+        run_count=1,
+        wages_total=Decimal("0.00"),
+        employee_taxes_total=Decimal("0.00"),
+        employer_taxes_total=Decimal("0.00"),
+        employee_retirement_deferral_total=Decimal("10.00"),
+        employer_retirement_contribution_total=Decimal("0.00"),
+    )
+    raw_runs = [{"totals": {"gross_pay": "-1.00"}}]
+
+    warnings = _collect_soft_flags(
+        raw_runs=raw_runs,
+        company_summary=summary,
+        payroll_cost_total=Decimal("-1.00"),
+    )
+
+    assert any("Officer wages total is $0.00" in warning for warning in warnings)
+    assert any("Retirement contributions are unusually high" in warning for warning in warnings)
+    assert any("Negative payroll totals detected" in warning for warning in warnings)
+    assert any("Negative payroll cost detected" in warning for warning in warnings)
+
+
 def _run_context(
     tmp_path: Path,
     *,
@@ -256,9 +256,9 @@ def test_payroll_summary_deliverable_generates_outputs_from_provider(tmp_path: P
     assert result.success is True
     assert provider.calls == [2025]
     assert result.warnings == []
-    assert any("04_Annual_Payroll_Summary/00_Company_Summary" in path for path in result.artifacts)
+    assert any("04_Annual_Payroll_Summary/cpa/00_Company_Summary" in path for path in result.artifacts)
     assert any(
-        "04_Annual_Payroll_Summary/Employees/Rivera_Alex_emp_emp-001" in path
+        "04_Annual_Payroll_Summary/cpa/Employees/Rivera_Alex_emp_emp-001" in path
         for path in result.artifacts
     )
     assert any(path.endswith("payroll_summary_2025_metadata.json") for path in result.artifacts)
@@ -280,49 +280,47 @@ def test_payroll_summary_deliverable_skips_when_gusto_unavailable(tmp_path: Path
     assert provider.calls == []
 
 
-def test_payroll_summary_deliverable_surfaces_soft_flags_as_non_blocking_warnings(
-    tmp_path: Path,
-) -> None:
-    payroll_runs: list[dict[str, object]] = [
-        {
-            "uuid": "run-soft-flags",
-            "pay_period_start_date": "2025-01-01",
-            "pay_period_end_date": "2025-01-15",
-            "check_date": "2025-01-20",
-            "totals": {
-                "gross_pay": "0.00",
-                "employee_taxes": "-10.00",
-                "employer_taxes": "0.00",
-            },
-            "employee_compensations": [
-                {
-                    "employee_uuid": "emp-off",
-                    "employee_name": "Pat Officer",
-                    "is_officer": True,
-                    "regular_pay": "-100.00",
-                    "bonus_pay": "0.00",
-                    "overtime_pay": "0.00",
-                    "employee_401k": "50.00",
-                    "employer_401k": "25.00",
-                }
-            ],
-        }
-    ]
-    provider = _PayrollProvider(payroll_runs)
+def test_payroll_summary_deliverable_emits_soft_flags_non_blocking(tmp_path: Path) -> None:
+    provider = _PayrollProvider(
+        [
+            {
+                "uuid": "run-soft-1",
+                "pay_period_start_date": "2025-01-01",
+                "pay_period_end_date": "2025-01-15",
+                "check_date": "2025-01-20",
+                "totals": {
+                    "gross_pay": "0.00",
+                    "employee_taxes": "-10.00",
+                    "employer_taxes": "0.00",
+                },
+                "employee_compensations": [
+                    {
+                        "employee_uuid": "emp-1",
+                        "employee_name": "Officer One",
+                        "regular_pay": "0.00",
+                        "bonus_pay": "0.00",
+                        "overtime_pay": "0.00",
+                        "employee_401k": "100.00",
+                        "employer_401k": "50.00",
+                    }
+                ],
+            }
+        ]
+    )
     deliverable = PayrollSummaryDeliverable()
 
     result = deliverable.generate(_run_context(tmp_path), provider, prompts={})
 
     assert result.success is True
-    assert any(
-        "Negative payroll amounts detected and treated as 0.00" in warning
-        for warning in result.warnings
-    )
-    assert any("Officer wages are 0.00 for: Pat Officer" in warning for warning in result.warnings)
-    assert any(
-        "Retirement contributions present with unusually low gross wages" in warning
-        for warning in result.warnings
-    )
+    assert "Officer wages total is $0.00; review officer compensation." in result.warnings
+    assert (
+        "Retirement contributions are unusually high relative to gross wages; "
+        "review payroll classifications."
+    ) in result.warnings
+    assert (
+        "Negative payroll totals detected in source data; "
+        "normalized values were clamped to 0.00."
+    ) in result.warnings
 
 
 def test_write_payroll_output_artifacts_writes_company_employee_and_private_metadata(
@@ -345,14 +343,16 @@ def test_write_payroll_output_artifacts_writes_company_employee_and_private_meta
     for path in artifact_paths:
         assert path.exists()
 
-    company_dir = tmp_path / "04_Annual_Payroll_Summary" / "00_Company_Summary"
+    company_dir = tmp_path / "04_Annual_Payroll_Summary" / "cpa" / "00_Company_Summary"
     assert (company_dir / "Annual_Payroll_Summary_2025.csv").exists()
     assert (company_dir / "Annual_Payroll_Summary_2025.pdf").exists()
-    assert (company_dir / "Annual_Payroll_Summary_2025.raw.json").exists()
+    company_raw_dir = tmp_path / "04_Annual_Payroll_Summary" / "dev" / "00_Company_Summary"
+    assert (company_raw_dir / "Annual_Payroll_Summary_2025.raw.json").exists()
 
     employee_file = (
         tmp_path
         / "04_Annual_Payroll_Summary"
+        / "cpa"
         / "Employees"
         / "Rivera_Alex_emp_emp-001"
         / "Payroll_Breakdown_Alex_Rivera_2025.csv"
@@ -366,7 +366,6 @@ def test_write_payroll_output_artifacts_writes_company_employee_and_private_meta
     assert metadata.deliverable == "payroll_summary_2025"
     assert len(metadata.input_fingerprint) == 64
     assert metadata.schema_versions == {"csv": "1.0"}
-    assert metadata.inputs.get("soft_flags") == []
     assert str(company_dir / "Annual_Payroll_Summary_2025.csv") in metadata.artifacts
 
 
@@ -406,8 +405,31 @@ def test_write_payroll_output_artifacts_redacts_company_raw_payload(tmp_path: Pa
     company_raw_path = (
         tmp_path
         / "04_Annual_Payroll_Summary"
+        / "dev"
         / "00_Company_Summary"
         / "Annual_Payroll_Summary_2025.raw.json"
     )
     raw_payload = json.loads(company_raw_path.read_text(encoding="utf-8"))
     assert raw_payload["access_token"] == "[REDACTED]"
+
+
+def test_write_payroll_output_artifacts_persists_warnings_in_metadata(tmp_path: Path) -> None:
+    payload = _load_fixture()
+    runs, employee_breakdowns = normalize_gusto_payload(payload)
+    summary, payroll_cost_total = build_company_summary(year=2025, payroll_runs=runs)
+
+    write_payroll_output_artifacts(
+        ctx=_run_context(tmp_path),
+        company_summary=summary,
+        payroll_cost_total=payroll_cost_total,
+        payroll_runs=runs,
+        employee_breakdowns=employee_breakdowns,
+        raw_payload=payload,
+        warnings=["soft-flag-example"],
+    )
+
+    metadata_path = (
+        tmp_path / "_meta" / "private" / "deliverables" / "payroll_summary_2025_metadata.json"
+    )
+    metadata = read_deliverable_metadata(metadata_path)
+    assert metadata.warnings == ["soft-flag-example"]

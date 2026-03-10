@@ -7,6 +7,7 @@ from cpapacket.packet.health_check import (
     DataHealthCheckContext,
     DataHealthIssue,
     DataHealthReport,
+    check_payroll_sync_status,
     render_data_health_report,
     run_data_health_precheck,
     should_continue_after_report,
@@ -115,3 +116,54 @@ def test_should_continue_after_report_behavior() -> None:
         )
         is True
     )
+
+
+class _PayrollProviders:
+    def __init__(self, runs: list[dict[str, object]]) -> None:
+        self._runs = runs
+
+    def get_payroll_runs(self, year: int) -> list[dict[str, object]]:
+        del year
+        return self._runs
+
+
+def test_check_payroll_sync_status_warns_when_unsynced() -> None:
+    providers = _PayrollProviders(
+        runs=[
+            {"uuid": "run-1", "check_date": "2025-01-20", "qbo_sync_status": "pending"},
+            {"uuid": "run-2", "check_date": "2025-02-20", "qbo_sync_status": "failed"},
+        ]
+    )
+    context = DataHealthCheckContext(year=2025, providers=providers, gusto_connected=True)
+
+    issue = check_payroll_sync_status(context)
+
+    assert issue is not None
+    assert issue.code == "payroll_sync_status"
+    assert issue.metadata["latest_payroll_uuid"] == "run-2"
+
+
+def test_check_payroll_sync_status_returns_none_when_synced() -> None:
+    providers = _PayrollProviders(
+        runs=[
+            {"uuid": "run-1", "check_date": "2025-02-20", "qbo_sync_completed": True},
+        ]
+    )
+    context = DataHealthCheckContext(year=2025, providers=providers, gusto_connected=True)
+
+    issue = check_payroll_sync_status(context)
+
+    assert issue is None
+
+
+def test_check_payroll_sync_status_skips_when_gusto_not_connected() -> None:
+    providers = _PayrollProviders(
+        runs=[
+            {"uuid": "run-1", "check_date": "2025-02-20", "qbo_sync_status": "failed"},
+        ]
+    )
+    context = DataHealthCheckContext(year=2025, providers=providers, gusto_connected=False)
+
+    issue = check_payroll_sync_status(context)
+
+    assert issue is None

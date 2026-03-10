@@ -28,6 +28,10 @@ _SECTION_BY_KEY = {
     "liabilities": "Liabilities",
     "equity": "Equity",
 }
+# QBO sometimes returns "LIABILITIES AND EQUITY" as a combined wrapper section.
+# We treat it as a pass-through so nested headers ("Liabilities", "Equity") define
+# their own canonical sections.
+_PASSTHROUGH_SECTIONS = {"liabilities and equity"}
 _RowType = Literal["header", "account", "subtotal", "total"]
 _REDACTED_VALUE = "[REDACTED]"
 _SENSITIVE_JSON_KEYS = {
@@ -127,15 +131,19 @@ class BalanceSheetDeliverable:
         deliverable_dir.mkdir(parents=True, exist_ok=True)
         meta_dir = ctx.out_dir / "_meta"
         meta_dir.mkdir(parents=True, exist_ok=True)
+        cpa_dir = deliverable_dir / "cpa"
+        cpa_dir.mkdir(parents=True, exist_ok=True)
+        dev_dir = deliverable_dir / "dev"
+        dev_dir.mkdir(parents=True, exist_ok=True)
 
         base_name = f"Balance_Sheet_{as_of}"
         csv_path = _resolve_output_path(
-            deliverable_dir / f"{base_name}.csv",
+            cpa_dir / f"{base_name}.csv",
             on_conflict=ctx.on_conflict,
             non_interactive=ctx.non_interactive,
         )
         pdf_path = _resolve_output_path(
-            deliverable_dir / f"{base_name}.pdf",
+            cpa_dir / f"{base_name}.pdf",
             on_conflict=ctx.on_conflict,
             non_interactive=ctx.non_interactive,
         )
@@ -143,7 +151,7 @@ class BalanceSheetDeliverable:
             None
             if ctx.no_raw
             else _resolve_output_path(
-                deliverable_dir / f"{base_name}_raw.json",
+                dev_dir / f"{base_name}_raw.json",
                 on_conflict=ctx.on_conflict,
                 non_interactive=ctx.non_interactive,
             )
@@ -249,18 +257,28 @@ def _walk_rows(
 
             # Top-level headers define canonical sections. Nested headers keep the
             # parent section (for groups like "Current Assets").
-            next_section = _resolve_section(label) if section is None else section
-            header_path_parts = [*path_parts, label]
-            out.append(
-                NormalizedRow(
-                    section=next_section,
-                    label=label,
-                    amount=amount,
-                    row_type="header",
-                    level=level,
-                    path=" > ".join(header_path_parts),
+            # Pass-through sections (e.g. "LIABILITIES AND EQUITY") are wrappers
+            # whose children define their own canonical sections.
+            is_passthrough = label.strip().lower() in _PASSTHROUGH_SECTIONS
+            if is_passthrough:
+                next_section = None
+            elif section is None:
+                next_section = _resolve_section(label)
+            else:
+                next_section = section
+
+            header_path_parts = [*path_parts, label] if not is_passthrough else list(path_parts)
+            if not is_passthrough:
+                out.append(
+                    NormalizedRow(
+                        section=next_section,
+                        label=label,
+                        amount=amount,
+                        row_type="header",
+                        level=level,
+                        path=" > ".join(header_path_parts),
+                    )
                 )
-            )
 
             inner = nested_rows.get("Row")
             if isinstance(inner, list):
@@ -268,11 +286,11 @@ def _walk_rows(
                     rows=inner,
                     section=next_section,
                     path_parts=header_path_parts,
-                    level=level + 1,
+                    level=level if is_passthrough else level + 1,
                     out=out,
                 )
 
-            if isinstance(summary, Mapping):
+            if isinstance(summary, Mapping) and not is_passthrough:
                 summary_label, summary_amount = _parse_col_data(summary.get("ColData"))
                 if summary_label:
                     out.append(
@@ -441,22 +459,24 @@ def _write_pdf(
     writer = PdfWriter()
     body_lines = [
         PdfBodyLine(
-            text=f"{row.label}  {row.amount:.2f}",
+            text=row.label,
             level=row.level,
             row_type=row.row_type,
+            amount=f"{row.amount:,.2f}",
         )
         for row in rows
     ]
     body_lines.extend(
         [
             PdfBodyLine(text="Balance Equation Summary", level=0, row_type="header"),
-            PdfBodyLine(text=f"Assets  {equation.assets:.2f}", level=1, row_type="account"),
+            PdfBodyLine(text="Assets", level=1, row_type="account", amount=f"{equation.assets:,.2f}"),
             PdfBodyLine(
-                text=f"Liabilities + Equity  {(equation.liabilities + equation.equity):.2f}",
+                text="Liabilities + Equity",
                 level=1,
                 row_type="account",
+                amount=f"{(equation.liabilities + equation.equity):,.2f}",
             ),
-            PdfBodyLine(text=f"Difference  {equation.difference:.2f}", level=1, row_type="total"),
+            PdfBodyLine(text="Difference", level=1, row_type="total", amount=f"{equation.difference:,.2f}"),
         ]
     )
     writer.write_report(

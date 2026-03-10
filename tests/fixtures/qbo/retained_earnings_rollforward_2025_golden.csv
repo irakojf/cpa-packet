@@ -1,0 +1,2 @@
+year,beginning_re,net_income,distributions,expected_ending_re,actual_ending_re,difference,status,flags,miscoded_distribution_count
+2025,1000.00,250.25,100.00,1150.25,1150.20,0.05,Mismatch,basis_risk_distributions_exceed_net_income,3

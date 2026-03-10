@@ -4,17 +4,27 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
+from decimal import Decimal
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, IO, Protocol, cast
+from typing import IO, Any, Protocol, cast
+
+import httpx
 
 from cpapacket.core.context import RunContext
 from cpapacket.core.filesystem import atomic_write
+from cpapacket.core.limiter import ServiceLimiter
+from cpapacket.core.retry import RetryPolicy
 from cpapacket.deliverables.base import DeliverableResult
 from cpapacket.deliverables.general_ledger_normalizer import normalize_general_ledger_report
 from cpapacket.models.general_ledger import GeneralLedgerRow
-from cpapacket.utils.constants import DELIVERABLE_FOLDERS, SCHEMA_VERSIONS
+from cpapacket.utils.constants import (
+    BALANCE_EQUATION_TOLERANCE,
+    DELIVERABLE_FOLDERS,
+    SCHEMA_VERSIONS,
+)
 from cpapacket.utils.prompts import resolve_output_path
 from cpapacket.writers.csv_writer import CsvWriter
 from cpapacket.writers.json_writer import JsonWriter
@@ -26,6 +36,13 @@ class GeneralLedgerMonthProvider(Protocol):
     def get_general_ledger(self, year: int, month: int) -> dict[str, Any]:
         """Return QBO GeneralLedger payload for a specific month."""
 
+    def get_general_ledger_with_source(
+        self,
+        year: int,
+        month: int,
+    ) -> tuple[dict[str, Any], str]:
+        """Return payload and source marker ("api" or "cache")."""
+
 
 @dataclass(frozen=True)
 class GeneralLedgerMonthlySlice:
@@ -33,6 +50,7 @@ class GeneralLedgerMonthlySlice:
 
     month: int
     payload: dict[str, Any]
+    source: str = "api"
 
 
 class GeneralLedgerSliceError(RuntimeError):
@@ -53,6 +71,10 @@ class GeneralLedgerSliceError(RuntimeError):
         self.failed_month = failed_month
         self.completed_slices = completed_slices
         self.cause = cause
+
+
+_SERVICE_LIMITER = ServiceLimiter()
+_RETRY_POLICY = RetryPolicy()
 
 
 def merge_general_ledger_monthly_slices(
@@ -93,10 +115,13 @@ def fetch_general_ledger_monthly_slices(
     end_month: int = 12,
     progress_callback: Callable[[int], None] | None = None,
 ) -> tuple[GeneralLedgerMonthlySlice, ...]:
-    """Fetch monthly general-ledger slices in order with resumable ranges.
+    """Fetch monthly general-ledger slices with bounded concurrency.
 
-    Pass ``start_month`` to resume after a prior partial failure (for example,
-    retrying from the first failed month onward).
+    Months are fetched in chronological order but a ThreadPoolExecutor keeps up to
+    ``QBO_MAX_CONCURRENCY`` slices in flight. ``ServiceLimiter`` gates QBO calls,
+    failures report the month that errored plus every previously completed slice,
+    and ``progress_callback`` receives sequential month numbers even when fetches
+    finish out of order.
     """
     if start_month < 1 or start_month > 12:
         raise ValueError("start_month must be between 1 and 12")
@@ -105,23 +130,104 @@ def fetch_general_ledger_monthly_slices(
     if start_month > end_month:
         raise ValueError("start_month must be <= end_month")
 
-    completed: list[GeneralLedgerMonthlySlice] = []
-    for month in range(start_month, end_month + 1):
+    months = list(range(start_month, end_month + 1))
+    limit = _SERVICE_LIMITER.limit_for("qbo")
+    month_iter = iter(months)
+
+    def _pop_next_month() -> int | None:
         try:
-            payload = provider.get_general_ledger(year, month)
-        except Exception as exc:  # pragma: no cover - exercised in tests via raised error
-            raise GeneralLedgerSliceError(
-                year=year,
-                failed_month=month,
-                completed_slices=tuple(completed),
-                cause=exc,
-            ) from exc
+            return next(month_iter)
+        except StopIteration:
+            return None
 
-        completed.append(GeneralLedgerMonthlySlice(month=month, payload=payload))
-        if progress_callback is not None:
-            progress_callback(month)
+    next_progress_month = start_month
+    pending_progress: set[int] = set()
 
-    return tuple(completed)
+    def _record_progress(month: int) -> None:
+        nonlocal next_progress_month
+        if progress_callback is None:
+            return
+        pending_progress.add(month)
+        while next_progress_month in pending_progress:
+            progress_callback(next_progress_month)
+            pending_progress.remove(next_progress_month)
+            next_progress_month += 1
+
+    def _fetch_month(month: int) -> GeneralLedgerMonthlySlice:
+        with _SERVICE_LIMITER.acquire("qbo"):
+            payload, source = _fetch_month_payload(provider=provider, year=year, month=month)
+        return GeneralLedgerMonthlySlice(
+            month=month,
+            payload=payload,
+            source="cache" if source == "cache" else "api",
+        )
+
+    completed: dict[int, GeneralLedgerMonthlySlice] = {}
+    pending: dict[Future[GeneralLedgerMonthlySlice], int] = {}
+
+    with ThreadPoolExecutor(max_workers=limit) as executor:
+        def _submit(next_month: int) -> None:
+            future = executor.submit(_fetch_month, next_month)
+            pending[future] = next_month
+
+        initial_slots = min(limit, len(months))
+        for _ in range(initial_slots):
+            month = _pop_next_month()
+            if month is None:
+                break
+            _submit(month)
+
+        while pending:
+            done, _ = wait(set(pending), return_when=FIRST_COMPLETED)
+            for future in done:
+                month = pending.pop(future)
+                try:
+                    slice_ = future.result()
+                except Exception as exc:  # pragma: no cover - exercised in tests via raised error
+                    lower_month_futures = {
+                        remaining: remaining_month
+                        for remaining, remaining_month in pending.items()
+                        if remaining_month < month
+                    }
+                    for remaining, remaining_month in list(pending.items()):
+                        if remaining_month >= month:
+                            remaining.cancel()
+
+                    while lower_month_futures:
+                        done_lower, _ = wait(
+                            set(lower_month_futures),
+                            return_when=FIRST_COMPLETED,
+                        )
+                        for lower_future in done_lower:
+                            lower_month = lower_month_futures.pop(lower_future)
+                            pending.pop(lower_future, None)
+                            try:
+                                lower_slice = lower_future.result()
+                            except Exception:
+                                continue
+                            completed[lower_month] = lower_slice
+                            _record_progress(lower_month)
+
+                    for remaining in list(pending):
+                        remaining.cancel()
+                    pending.clear()
+
+                    completed_ordered = tuple(
+                        completed[m] for m in sorted(completed) if m < month
+                    )
+                    raise GeneralLedgerSliceError(
+                        year=year,
+                        failed_month=month,
+                        completed_slices=completed_ordered,
+                        cause=exc,
+                    ) from exc
+                completed[month] = slice_
+                _record_progress(month)
+                next_month = _pop_next_month()
+                if next_month is not None:
+                    _submit(next_month)
+
+    return tuple(completed[m] for m in sorted(completed))
 
 
 def _dedupe_key_for_row(row: GeneralLedgerRow) -> str:
@@ -156,8 +262,58 @@ class GeneralLedgerDeliverable:
     def gather_prompts(self, _ctx: object) -> dict[str, Any]:
         return {}
 
-    def is_current(self, _ctx: object) -> bool:
-        return False
+    def is_current(self, ctx: object) -> bool:
+        if not isinstance(ctx, RunContext):
+            return False
+        if not ctx.incremental or ctx.force:
+            return False
+
+        metadata_path = ctx.out_dir / "_meta" / f"{self.key}_metadata.json"
+        if not metadata_path.exists():
+            return False
+
+        try:
+            metadata_payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return False
+
+        recorded_fingerprint = metadata_payload.get("input_fingerprint")
+        if not isinstance(recorded_fingerprint, str) or not recorded_fingerprint:
+            return False
+
+        artifacts = metadata_payload.get("artifacts")
+        if not isinstance(artifacts, list) or not artifacts:
+            return False
+        artifact_paths = [Path(item) for item in artifacts if isinstance(item, str) and item]
+        if len(artifact_paths) != len(artifacts):
+            return False
+        if any(not artifact.exists() for artifact in artifact_paths):
+            return False
+
+        raw_path = ctx.out_dir / self.folder / "dev" / f"General_Ledger_{ctx.year}_raw.json"
+        if not raw_path.exists():
+            return False
+
+        try:
+            raw_payload = json.loads(raw_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return False
+        slices = raw_payload.get("slices")
+        if not isinstance(slices, list):
+            return False
+
+        expected_inputs = _build_metadata_inputs(
+            slices=slices,
+            context_inputs={
+                "year": ctx.year,
+                "no_raw": ctx.no_raw,
+                "redact": ctx.redact,
+                "force": ctx.force,
+            },
+        )
+        canonical = json.dumps(expected_inputs, sort_keys=True, separators=(",", ":"))
+        expected_fingerprint = sha256(canonical.encode("utf-8")).hexdigest()
+        return expected_fingerprint == recorded_fingerprint
 
     def generate(
         self,
@@ -167,19 +323,46 @@ class GeneralLedgerDeliverable:
     ) -> DeliverableResult:
         del prompts
 
+        if self.is_current(ctx):
+            metadata_path = ctx.out_dir / "_meta" / f"{self.key}_metadata.json"
+            try:
+                metadata_payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                metadata_payload = {}
+            artifacts_raw = metadata_payload.get("artifacts", [])
+            cached_artifacts = [item for item in artifacts_raw if isinstance(item, str)]
+            return DeliverableResult(
+                deliverable_key=self.key,
+                success=True,
+                artifacts=cached_artifacts,
+                warnings=[
+                    "Skipped incremental run; existing general-ledger artifacts are current."
+                ],
+            )
+
         warnings: list[str] = []
         slices = fetch_general_ledger_monthly_slices(year=ctx.year, provider=provider)
         rows = merge_general_ledger_monthly_slices(slices)
+        total_signed = sum((row.signed_amount for row in rows), Decimal("0"))
         if not rows:
             warnings.append("General ledger normalized to zero rows.")
+        if rows and abs(total_signed) > BALANCE_EQUATION_TOLERANCE:
+            warnings.append(
+                "General ledger signed amounts do not balance "
+                f"(total={total_signed}, tolerance={BALANCE_EQUATION_TOLERANCE})."
+            )
 
         deliverable_dir = ctx.out_dir / self.folder
         deliverable_dir.mkdir(parents=True, exist_ok=True)
         meta_dir = ctx.out_dir / "_meta"
         meta_dir.mkdir(parents=True, exist_ok=True)
+        cpa_dir = deliverable_dir / "cpa"
+        cpa_dir.mkdir(parents=True, exist_ok=True)
+        dev_dir = deliverable_dir / "dev"
+        dev_dir.mkdir(parents=True, exist_ok=True)
 
         csv_path = _resolve_output_path(
-            deliverable_dir / f"General_Ledger_{ctx.year}.csv",
+            cpa_dir / f"General_Ledger_{ctx.year}.csv",
             on_conflict=ctx.on_conflict,
             non_interactive=ctx.non_interactive,
         )
@@ -204,7 +387,7 @@ class GeneralLedgerDeliverable:
         )
 
         json_path = JsonWriter().write_payload(
-            deliverable_dir / f"General_Ledger_{ctx.year}_raw.json",
+            dev_dir / f"General_Ledger_{ctx.year}_raw.json",
             payload=_build_raw_payload(ctx.year, slices),
             no_raw=ctx.no_raw,
             redact=ctx.redact,
@@ -222,6 +405,26 @@ class GeneralLedgerDeliverable:
 
         _write_metadata(
             path=metadata_path,
+            key=self.key,
+            slices=slices,
+            artifacts=metadata_artifacts,
+            warnings=warnings,
+            context_inputs={
+                "year": ctx.year,
+                "no_raw": ctx.no_raw,
+                "redact": ctx.redact,
+                "force": ctx.force,
+            },
+        )
+        private_metadata_path = (
+            ctx.out_dir
+            / "_meta"
+            / "private"
+            / "deliverables"
+            / f"{self.key}_{ctx.year}_metadata.json"
+        )
+        _write_metadata(
+            path=private_metadata_path,
             key=self.key,
             slices=slices,
             artifacts=metadata_artifacts,
@@ -253,7 +456,10 @@ def _resolve_output_path(
     non_interactive: bool,
 ) -> Path:
     normalized = None if on_conflict == "prompt" else on_conflict
-    return resolve_output_path(path, on_conflict=normalized, non_interactive=non_interactive)
+    return cast(
+        Path,
+        resolve_output_path(path, on_conflict=normalized, non_interactive=non_interactive),
+    )
 
 
 def _iter_csv_rows(rows: Sequence[GeneralLedgerRow]) -> Iterable[dict[str, str]]:
@@ -292,19 +498,19 @@ def _write_metadata(
     warnings: list[str],
     context_inputs: Mapping[str, Any],
 ) -> None:
-    metadata_inputs = {
-        **dict(context_inputs),
-        "slice_hashes": [
-            sha256(json.dumps(slice_.payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
-            for slice_ in slices
-        ],
-    }
+    metadata_inputs = _build_metadata_inputs(
+        slices=[slice_.payload for slice_ in slices],
+        context_inputs=context_inputs,
+    )
     canonical = json.dumps(metadata_inputs, sort_keys=True, separators=(",", ":"))
     fingerprint = sha256(canonical.encode("utf-8")).hexdigest()
     payload: dict[str, Any] = {
         "deliverable": key,
+        "inputs": metadata_inputs,
         "input_fingerprint": fingerprint,
         "schema_versions": SCHEMA_VERSIONS.get(key, {}),
+        "cached_months": [slice_.month for slice_ in slices if slice_.source == "cache"],
+        "fresh_months": [slice_.month for slice_ in slices if slice_.source != "cache"],
         "artifacts": [str(item) for item in artifacts],
         "warnings": warnings,
     }
@@ -312,3 +518,45 @@ def _write_metadata(
         text_handle = cast(IO[str], handle)
         json.dump(payload, text_handle, indent=2, sort_keys=True)
         text_handle.write("\n")
+
+
+def _build_metadata_inputs(
+    *,
+    slices: Sequence[dict[str, Any]],
+    context_inputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    return {
+        **dict(context_inputs),
+        "slice_hashes": [
+            sha256(
+                json.dumps(slice, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+            for slice in slices
+        ],
+    }
+
+
+def _fetch_month_payload(
+    *,
+    provider: GeneralLedgerMonthProvider,
+    year: int,
+    month: int,
+) -> tuple[dict[str, Any], str]:
+    retries_remaining = _RETRY_POLICY.max_5xx
+    while True:
+        try:
+            if hasattr(provider, "get_general_ledger_with_source"):
+                payload_with_source = provider.get_general_ledger_with_source(year, month)
+                if (
+                    isinstance(payload_with_source, tuple)
+                    and len(payload_with_source) == 2
+                    and isinstance(payload_with_source[0], dict)
+                    and isinstance(payload_with_source[1], str)
+                ):
+                    return payload_with_source[0], payload_with_source[1]
+
+            return provider.get_general_ledger(year, month), "api"
+        except (TimeoutError, httpx.TimeoutException):
+            if retries_remaining == 0:
+                raise
+            retries_remaining -= 1

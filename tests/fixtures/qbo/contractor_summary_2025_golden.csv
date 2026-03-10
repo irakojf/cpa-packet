@@ -1,0 +1,3 @@
+vendor_id,display_name,tax_id_on_file,total_paid,card_processor_total,non_card_total,requires_1099_review,flags
+e112a5c6e828,Alpha LLC,false,700.00,0.00,700.00,true,requires_1099_review
+7368c1579b8f,Beta LLC,false,550.00,0.00,550.00,false,

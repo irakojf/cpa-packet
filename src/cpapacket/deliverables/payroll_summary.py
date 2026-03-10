@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
@@ -26,22 +26,6 @@ from cpapacket.writers.pdf_writer import PdfBodyLine, PdfWriter
 
 _ZERO = Decimal("0.00")
 _CENT = Decimal("0.01")
-_LOW_GROSS_WAGE_THRESHOLD = Decimal("1000.00")
-_RETIREMENT_TO_WAGES_RATIO_THRESHOLD = Decimal("0.20")
-_MAX_NEGATIVE_EXAMPLES = 3
-_OFFICER_NAME_KEYWORDS = ("officer", "ceo", "chief", "president", "owner")
-_OFFICER_ROLE_KEYS = ("title", "job_title", "role", "employee_type")
-_OFFICER_BOOLEAN_KEYS = ("is_officer", "officer")
-_RUN_TOTAL_NEGATIVE_KEYS = ("gross_pay", "employee_taxes", "employer_taxes")
-_EMPLOYEE_NEGATIVE_KEYS = (
-    "regular_pay",
-    "bonus_pay",
-    "overtime_pay",
-    "employee_401k",
-    "employer_401k",
-    "employee_taxes",
-    "employer_taxes",
-)
 
 
 def normalize_gusto_payload(
@@ -240,156 +224,6 @@ def _parse_date(value: Any) -> date | None:
         return None
 
 
-def _parse_money_loose(value: Any) -> Decimal | None:
-    if value is None:
-        return None
-    try:
-        parsed = value if isinstance(value, Decimal) else Decimal(str(value))
-    except (InvalidOperation, TypeError, ValueError):
-        return None
-    if not parsed.is_finite():
-        return None
-    return parsed.quantize(_CENT, rounding=ROUND_HALF_UP)
-
-
-def _looks_like_officer(raw_compensation: Mapping[str, Any]) -> bool:
-    for key in _OFFICER_BOOLEAN_KEYS:
-        value = raw_compensation.get(key)
-        if isinstance(value, bool) and value:
-            return True
-        if isinstance(value, str) and value.strip().lower() in {"true", "yes", "1"}:
-            return True
-    for key in _OFFICER_ROLE_KEYS:
-        value = raw_compensation.get(key)
-        if isinstance(value, str):
-            text = value.strip().lower()
-            if any(keyword in text for keyword in _OFFICER_NAME_KEYWORDS):
-                return True
-    name = str(raw_compensation.get("employee_name", "")).strip().lower()
-    return "officer" in name
-
-
-def detect_payroll_soft_flags(
-    *,
-    raw_runs: list[Any],
-    employee_breakdowns: list[EmployeePayrollBreakdown],
-) -> list[str]:
-    warnings: list[str] = []
-    warnings.extend(_detect_negative_amount_flags(raw_runs))
-    warnings.extend(_detect_officer_zero_wage_flags(raw_runs, employee_breakdowns))
-    warnings.extend(_detect_low_wage_retirement_flags(employee_breakdowns))
-    return warnings
-
-
-def _detect_negative_amount_flags(raw_runs: list[Any]) -> list[str]:
-    examples: list[str] = []
-    for raw in raw_runs:
-        if not isinstance(raw, Mapping):
-            continue
-        run_id = str(raw.get("uuid", "")).strip() or "unknown-run"
-        totals = raw.get("totals")
-        if isinstance(totals, Mapping):
-            for key in _RUN_TOTAL_NEGATIVE_KEYS:
-                amount = _parse_money_loose(totals.get(key))
-                if amount is not None and amount < _ZERO:
-                    examples.append(f"{run_id}.totals.{key}={amount:.2f}")
-                    if len(examples) >= _MAX_NEGATIVE_EXAMPLES:
-                        break
-        if len(examples) >= _MAX_NEGATIVE_EXAMPLES:
-            break
-        for compensation in _employee_compensations(raw):
-            employee_id = str(compensation.get("employee_uuid", "")).strip() or "unknown-employee"
-            for key in _EMPLOYEE_NEGATIVE_KEYS:
-                amount = _parse_money_loose(compensation.get(key))
-                if amount is not None and amount < _ZERO:
-                    examples.append(f"{run_id}.{employee_id}.{key}={amount:.2f}")
-                    if len(examples) >= _MAX_NEGATIVE_EXAMPLES:
-                        break
-            if len(examples) >= _MAX_NEGATIVE_EXAMPLES:
-                break
-        if len(examples) >= _MAX_NEGATIVE_EXAMPLES:
-            break
-    if not examples:
-        return []
-    summary = ", ".join(examples)
-    return [f"Negative payroll amounts detected and treated as 0.00: {summary}"]
-
-
-def _detect_officer_zero_wage_flags(
-    raw_runs: list[Any],
-    employee_breakdowns: list[EmployeePayrollBreakdown],
-) -> list[str]:
-    wages_by_employee: dict[str, Decimal] = {}
-    names_by_employee: dict[str, str] = {}
-    for employee_id, employee_name, wages, *_ in aggregate_employee_breakdowns(employee_breakdowns):
-        wages_by_employee[employee_id] = wages
-        names_by_employee[employee_id] = employee_name
-
-    officer_ids: set[str] = set()
-    for raw in raw_runs:
-        if not isinstance(raw, Mapping):
-            continue
-        for compensation in _employee_compensations(raw):
-            if not _looks_like_officer(compensation):
-                continue
-            employee_id = str(compensation.get("employee_uuid", "")).strip()
-            if employee_id:
-                officer_ids.add(employee_id)
-                if employee_id not in names_by_employee:
-                    names_by_employee[employee_id] = str(
-                        compensation.get("employee_name", "Unknown")
-                    ).strip() or "Unknown"
-
-    if not officer_ids:
-        return []
-
-    zero_wage_officers = [
-        names_by_employee.get(employee_id, employee_id)
-        for employee_id in sorted(officer_ids)
-        if wages_by_employee.get(employee_id, _ZERO) == _ZERO
-    ]
-    if not zero_wage_officers:
-        return []
-    return [f"Officer wages are 0.00 for: {', '.join(zero_wage_officers)}"]
-
-
-def _detect_low_wage_retirement_flags(
-    employee_breakdowns: list[EmployeePayrollBreakdown],
-) -> list[str]:
-    low_wage_employees: list[str] = []
-    high_ratio_employees: list[str] = []
-
-    for _, employee_name, wages, _, _, employee_retirement, employer_retirement in (
-        aggregate_employee_breakdowns(employee_breakdowns)
-    ):
-        retirement_total = employee_retirement + employer_retirement
-        if retirement_total <= _ZERO:
-            continue
-        if wages <= _LOW_GROSS_WAGE_THRESHOLD:
-            low_wage_employees.append(
-                f"{employee_name} (wages={wages:.2f}, retirement={retirement_total:.2f})"
-            )
-            continue
-        ratio = (retirement_total / wages).quantize(_CENT, rounding=ROUND_HALF_UP)
-        if ratio >= _RETIREMENT_TO_WAGES_RATIO_THRESHOLD:
-            high_ratio_employees.append(
-                f"{employee_name} (wages={wages:.2f}, retirement={retirement_total:.2f})"
-            )
-
-    warnings: list[str] = []
-    if low_wage_employees:
-        warnings.append(
-            "Retirement contributions present with unusually low gross wages: "
-            + ", ".join(low_wage_employees[:3])
-        )
-    if high_ratio_employees:
-        warnings.append(
-            "Retirement contributions are high relative to gross wages: "
-            + ", ".join(high_ratio_employees[:3])
-        )
-    return warnings
-
-
 class _EmployeeTotals(TypedDict):
     employee_name: str
     wages: Decimal
@@ -482,16 +316,18 @@ class PayrollSummaryDeliverable:
                 warnings=["Skipped payroll summary; Gusto not connected."],
             )
 
+        company_name = _extract_company_name(store)
         raw_runs = store.get_payroll_runs(ctx.year)
         runs = normalize_payroll_runs(raw_runs)
         employee_breakdowns = normalize_employee_breakdowns(raw_runs)
-        soft_flag_warnings = detect_payroll_soft_flags(
-            raw_runs=raw_runs,
-            employee_breakdowns=employee_breakdowns,
-        )
         company_summary, payroll_cost_total = build_company_summary(
             year=ctx.year,
             payroll_runs=runs,
+        )
+        warnings = _collect_soft_flags(
+            raw_runs=raw_runs,
+            company_summary=company_summary,
+            payroll_cost_total=payroll_cost_total,
         )
         raw_payload: dict[str, Any] = {"year": ctx.year, "payrolls": raw_runs}
         artifacts = write_payroll_output_artifacts(
@@ -501,9 +337,9 @@ class PayrollSummaryDeliverable:
             payroll_runs=runs,
             employee_breakdowns=employee_breakdowns,
             raw_payload=raw_payload,
-            soft_flags=soft_flag_warnings,
+            warnings=warnings,
+            company_name=company_name,
         )
-        warnings: list[str] = list(soft_flag_warnings)
         if not runs:
             warnings.append("No payroll runs found; generated zero-value payroll summary.")
         return DeliverableResult(
@@ -522,23 +358,28 @@ def write_payroll_output_artifacts(
     payroll_runs: list[PayrollRun],
     employee_breakdowns: list[EmployeePayrollBreakdown],
     raw_payload: Mapping[str, Any],
-    soft_flags: list[str] | None = None,
+    warnings: Sequence[str] = (),
+    company_name: str = "Unknown Company",
 ) -> list[str]:
     """Write payroll summary artifacts (company + per-employee) and metadata."""
     deliverable_dir = ensure_directory(ctx.out_dir / DELIVERABLE_FOLDERS["payroll_summary"])
-    company_dir = ensure_directory(deliverable_dir / "00_Company_Summary")
-    employees_dir = ensure_directory(deliverable_dir / "Employees")
+    cpa_dir = ensure_directory(deliverable_dir / "cpa")
+    dev_dir = ensure_directory(deliverable_dir / "dev")
+    company_cpa_dir = ensure_directory(cpa_dir / "00_Company_Summary")
+    company_dev_dir = ensure_directory(dev_dir / "00_Company_Summary")
+    employees_cpa_dir = ensure_directory(cpa_dir / "Employees")
+    employees_dev_dir = ensure_directory(dev_dir / "Employees")
 
     artifacts: list[Path] = []
 
     company_base_name = f"Annual_Payroll_Summary_{ctx.year}"
     company_csv_path = _resolve_output_path(
-        company_dir / f"{company_base_name}.csv",
+        company_cpa_dir / f"{company_base_name}.csv",
         on_conflict=ctx.on_conflict,
         non_interactive=ctx.non_interactive,
     )
     company_pdf_path = _resolve_output_path(
-        company_dir / f"{company_base_name}.pdf",
+        company_cpa_dir / f"{company_base_name}.pdf",
         on_conflict=ctx.on_conflict,
         non_interactive=ctx.non_interactive,
     )
@@ -546,7 +387,7 @@ def write_payroll_output_artifacts(
         None
         if ctx.no_raw
         else _resolve_output_path(
-            company_dir / f"{company_base_name}.raw.json",
+            company_dev_dir / f"{company_base_name}.raw.json",
             on_conflict=ctx.on_conflict,
             non_interactive=ctx.non_interactive,
         )
@@ -562,6 +403,7 @@ def write_payroll_output_artifacts(
         year=ctx.year,
         company_summary=company_summary,
         payroll_cost_total=payroll_cost_total,
+        company_name=company_name,
     )
     if company_raw_path is not None:
         JsonWriter().write_payload(
@@ -586,18 +428,19 @@ def write_payroll_output_artifacts(
         employee_folder = _employee_folder_name(
             employee_name=employee_name, employee_id=employee_id
         )
-        employee_dir = ensure_directory(employees_dir / employee_folder)
+        employee_cpa_dir = ensure_directory(employees_cpa_dir / employee_folder)
+        employee_dev_dir = ensure_directory(employees_dev_dir / employee_folder)
         employee_base_name = (
             f"Payroll_Breakdown_{sanitize_filesystem_name(employee_name)}_{ctx.year}"
         )
 
         employee_csv_path = _resolve_output_path(
-            employee_dir / f"{employee_base_name}.csv",
+            employee_cpa_dir / f"{employee_base_name}.csv",
             on_conflict=ctx.on_conflict,
             non_interactive=ctx.non_interactive,
         )
         employee_pdf_path = _resolve_output_path(
-            employee_dir / f"{employee_base_name}.pdf",
+            employee_cpa_dir / f"{employee_base_name}.pdf",
             on_conflict=ctx.on_conflict,
             non_interactive=ctx.non_interactive,
         )
@@ -605,7 +448,7 @@ def write_payroll_output_artifacts(
             None
             if ctx.no_raw
             else _resolve_output_path(
-                employee_dir / f"{employee_base_name}.raw.json",
+                employee_dev_dir / f"{employee_base_name}.raw.json",
                 on_conflict=ctx.on_conflict,
                 non_interactive=ctx.non_interactive,
             )
@@ -623,6 +466,7 @@ def write_payroll_output_artifacts(
             employee_id=employee_id,
             employee_name=employee_name,
             employee_rows=by_employee[employee_id],
+            company_name=company_name,
         )
         if employee_raw_path is not None:
             _write_employee_breakdown_raw(
@@ -652,7 +496,6 @@ def write_payroll_output_artifacts(
         "no_raw": ctx.no_raw,
         "redact": ctx.redact,
         "source_run_count": len(payroll_runs),
-        "soft_flags": list(soft_flags or []),
     }
     metadata = DeliverableMetadata(
         deliverable=metadata_key,
@@ -660,11 +503,87 @@ def write_payroll_output_artifacts(
         input_fingerprint=compute_input_fingerprint(metadata_inputs),
         schema_versions=SCHEMA_VERSIONS.get("payroll_summary", {}),
         artifacts=[str(path) for path in artifacts],
+        warnings=list(warnings),
     )
     write_deliverable_metadata(metadata_path, metadata)
     artifacts.append(metadata_path)
 
     return [str(path) for path in artifacts]
+
+
+def _collect_soft_flags(
+    *,
+    raw_runs: Sequence[Mapping[str, Any]],
+    company_summary: CompanyPayrollSummary,
+    payroll_cost_total: Decimal,
+) -> list[str]:
+    if company_summary.run_count == 0:
+        return []
+
+    warnings: list[str] = []
+    if company_summary.wages_total == _ZERO:
+        warnings.append("Officer wages total is $0.00; review officer compensation.")
+
+    retirement_total = (
+        company_summary.employee_retirement_deferral_total
+        + company_summary.employer_retirement_contribution_total
+    ).quantize(_CENT, rounding=ROUND_HALF_UP)
+    if retirement_total > _ZERO and company_summary.wages_total <= retirement_total:
+        warnings.append(
+            "Retirement contributions are unusually high relative to gross wages; "
+            "review payroll classifications."
+        )
+
+    if _raw_payload_contains_negative_totals(raw_runs):
+        warnings.append(
+            "Negative payroll totals detected in source data; "
+            "normalized values were clamped to 0.00."
+        )
+
+    if payroll_cost_total < _ZERO:
+        warnings.append("Negative payroll cost detected; review payroll source data.")
+
+    return warnings
+
+
+def _raw_payload_contains_negative_totals(raw_runs: Sequence[Mapping[str, Any]]) -> bool:
+    tracked_keys = {
+        "gross_pay",
+        "employee_taxes",
+        "employer_taxes",
+        "regular_pay",
+        "bonus_pay",
+        "overtime_pay",
+        "employee_401k",
+        "employer_401k",
+    }
+    return any(_mapping_has_negative_value(raw, keys=tracked_keys) for raw in raw_runs)
+
+
+def _mapping_has_negative_value(
+    mapping: Mapping[str, Any],
+    *,
+    keys: set[str],
+) -> bool:
+    for key, value in mapping.items():
+        if isinstance(value, Mapping):
+            if _mapping_has_negative_value(value, keys=keys):
+                return True
+            continue
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, Mapping) and _mapping_has_negative_value(item, keys=keys):
+                    return True
+            continue
+        if key not in keys:
+            continue
+        try:
+            parsed = Decimal(str(value))
+        except (InvalidOperation, TypeError, ValueError):
+            continue
+        if parsed.is_finite() and parsed < _ZERO:
+            return True
+    return False
 
 
 def _write_company_summary_csv(
@@ -710,10 +629,11 @@ def _write_company_summary_pdf(
     year: int,
     company_summary: CompanyPayrollSummary,
     payroll_cost_total: Decimal,
+    company_name: str = "Unknown Company",
 ) -> None:
     PdfWriter().write_report(
         path,
-        company_name="Unknown Company",
+        company_name=company_name,
         report_title="Annual Payroll Summary",
         date_range_label=f"{year}-01-01 to {year}-12-31",
         body_lines=[
@@ -776,11 +696,12 @@ def _write_employee_breakdown_pdf(
     employee_id: str,
     employee_name: str,
     employee_rows: list[EmployeePayrollBreakdown],
+    company_name: str = "Unknown Company",
 ) -> None:
     totals = _employee_totals(employee_rows)
     PdfWriter().write_report(
         path,
-        company_name="Unknown Company",
+        company_name=company_name,
         report_title=f"Payroll Breakdown - {employee_name}",
         date_range_label=f"{year}-01-01 to {year}-12-31",
         body_lines=[
@@ -864,3 +785,24 @@ def _resolve_output_path(path: Path, *, on_conflict: str, non_interactive: bool)
             non_interactive=non_interactive,
         ),
     )
+
+
+def _extract_company_name(store: object) -> str:
+    get_info = getattr(store, "get_company_info", None)
+    if get_info is None:
+        return "Unknown Company"
+    try:
+        payload = get_info()
+    except Exception:
+        return "Unknown Company"
+    if not isinstance(payload, Mapping):
+        return "Unknown Company"
+    company_info = payload.get("CompanyInfo")
+    if isinstance(company_info, Mapping):
+        legal_name = company_info.get("LegalName")
+        if isinstance(legal_name, str) and legal_name.strip():
+            return legal_name.strip()
+        company_name = company_info.get("CompanyName")
+        if isinstance(company_name, str) and company_name.strip():
+            return company_name.strip()
+    return "Unknown Company"

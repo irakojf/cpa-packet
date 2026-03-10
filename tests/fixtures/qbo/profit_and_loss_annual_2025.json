@@ -1,0 +1,75 @@
+{
+  "Header": {
+    "ReportName": "ProfitAndLoss",
+    "ReportBasis": "Accrual",
+    "StartPeriod": "2025-01-01",
+    "EndPeriod": "2025-12-31",
+    "Currency": "USD",
+    "CompanyName": "Northwind Orchard Holdings LLC"
+  },
+  "Columns": {
+    "Column": [
+      {"ColTitle": "Account"},
+      {"ColTitle": "Total"}
+    ]
+  },
+  "Rows": {
+    "Row": [
+      {
+        "Header": {"ColData": [{"value": "Income"}]},
+        "Rows": {
+          "Row": [
+            {"ColData": [{"value": "Product Revenue"}, {"value": "152340.15"}]},
+            {"ColData": [{"value": "Service Revenue"}, {"value": "48320.55"}]}
+          ]
+        },
+        "Summary": {"ColData": [{"value": "Total Income"}, {"value": "200660.70"}]}
+      },
+      {
+        "Header": {"ColData": [{"value": "Cost of Goods Sold"}]},
+        "Rows": {
+          "Row": [
+            {"ColData": [{"value": "Materials"}, {"value": "42100.10"}]},
+            {"ColData": [{"value": "Shipping"}, {"value": "6340.60"}]}
+          ]
+        },
+        "Summary": {"ColData": [{"value": "Total Cost of Goods Sold"}, {"value": "48440.70"}]}
+      },
+      {
+        "Header": {"ColData": [{"value": "Expenses"}]},
+        "Rows": {
+          "Row": [
+            {"ColData": [{"value": "Payroll"}, {"value": "58100.00"}]},
+            {"ColData": [{"value": "Rent"}, {"value": "18000.00"}]},
+            {"ColData": [{"value": "Software"}, {"value": "3240.99"}]}
+          ]
+        },
+        "Summary": {"ColData": [{"value": "Total Expenses"}, {"value": "79340.99"}]}
+      },
+      {
+        "Header": {"ColData": [{"value": "Other Income"}]},
+        "Rows": {
+          "Row": [
+            {"ColData": [{"value": "Interest Income"}, {"value": "245.11"}]}
+          ]
+        },
+        "Summary": {"ColData": [{"value": "Total Other Income"}, {"value": "245.11"}]}
+      },
+      {
+        "Header": {"ColData": [{"value": "Other Expenses"}]},
+        "Rows": {
+          "Row": [
+            {"ColData": [{"value": "Bank Charges"}, {"value": "95.00"}]}
+          ]
+        },
+        "Summary": {"ColData": [{"value": "Total Other Expenses"}, {"value": "95.00"}]}
+      }
+    ]
+  },
+  "Summary": {
+    "ColData": [
+      {"value": "Net Income"},
+      {"value": "73029.12"}
+    ]
+  }
+}

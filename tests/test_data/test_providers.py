@@ -17,6 +17,17 @@ class _FakeResponse:
         return self._payload
 
 
+class _FakeErrorResponse:
+    def __init__(self, status_code: int) -> None:
+        self.status_code = status_code
+
+
+class _FakeHttpStatusError(RuntimeError):
+    def __init__(self, status_code: int) -> None:
+        super().__init__(f"HTTP {status_code}")
+        self.response = _FakeErrorResponse(status_code)
+
+
 class _FakeQboClient:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
@@ -79,6 +90,20 @@ def test_get_pnl_uses_store_cache_for_repeated_calls() -> None:
     assert first == second
     assert len(qbo.calls) == 1
     assert qbo.calls[0]["endpoint"] == "/reports/ProfitAndLoss"
+
+
+@pytest.mark.parametrize(
+    ("raw_method", "expected"),
+    [("accrual", "Accrual"), ("cash", "Cash"), ("Accrual", "Accrual")],
+)
+def test_get_pnl_normalizes_accounting_method_for_qbo(raw_method: str, expected: str) -> None:
+    store = SessionDataStore()
+    qbo = _FakeQboClient()
+    providers = DataProviders(store=store, qbo_client=qbo)
+
+    providers.get_pnl(2025, raw_method)
+
+    assert qbo.calls[0]["params"]["accounting_method"] == expected
 
 
 def test_get_general_ledger_uses_month_date_range() -> None:
@@ -245,3 +270,74 @@ def test_get_pnl_integration_cache_hit_avoids_duplicate_http_calls() -> None:
     assert first == {"Rows": {"Row": []}}
     assert second == first
     assert route.call_count == 1
+
+
+def test_get_pnl_retries_400_with_lowercase_then_succeeds() -> None:
+    class _VariantQboClient(_FakeQboClient):
+        def request(
+            self,
+            method: str,
+            endpoint: str,
+            *,
+            params: dict[str, Any] | None = None,
+            json_body: dict[str, Any] | None = None,
+        ) -> _FakeResponse:
+            self.calls.append(
+                {
+                    "method": method,
+                    "endpoint": endpoint,
+                    "params": params,
+                    "json_body": json_body,
+                }
+            )
+            accounting_method = (params or {}).get("accounting_method")
+            if accounting_method == "Accrual":
+                raise _FakeHttpStatusError(400)
+            return _FakeResponse({"Rows": {"Row": []}, "accounting_method": accounting_method})
+
+    store = SessionDataStore()
+    qbo = _VariantQboClient()
+    providers = DataProviders(store=store, qbo_client=qbo)
+
+    payload = providers.get_pnl(2025, "Accrual")
+
+    assert payload["Rows"] == {"Row": []}
+    assert payload["accounting_method"] == "accrual"
+    assert [call["params"].get("accounting_method") for call in qbo.calls] == [
+        "Accrual",
+        "accrual",
+    ]
+
+
+def test_get_pnl_raises_actionable_error_when_all_400_variants_fail() -> None:
+    class _Always400QboClient(_FakeQboClient):
+        def request(
+            self,
+            method: str,
+            endpoint: str,
+            *,
+            params: dict[str, Any] | None = None,
+            json_body: dict[str, Any] | None = None,
+        ) -> _FakeResponse:
+            self.calls.append(
+                {
+                    "method": method,
+                    "endpoint": endpoint,
+                    "params": params,
+                    "json_body": json_body,
+                }
+            )
+            raise _FakeHttpStatusError(400)
+
+    store = SessionDataStore()
+    qbo = _Always400QboClient()
+    providers = DataProviders(store=store, qbo_client=qbo)
+
+    with pytest.raises(RuntimeError, match="all supported parameter variants"):
+        providers.get_pnl(2025, "Accrual")
+
+    assert [call["params"].get("accounting_method") for call in qbo.calls] == [
+        "Accrual",
+        "accrual",
+        None,
+    ]

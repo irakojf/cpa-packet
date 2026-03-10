@@ -99,16 +99,19 @@ def _run_deliverable_with_fixture(
     csv_path = (
         tmp_path
         / "01_Year-End_Profit_and_Loss"
+        / "cpa"
         / "Profit_and_Loss_2025-01-01_to_2025-12-31_accrual.csv"
     )
     pdf_path = (
         tmp_path
         / "01_Year-End_Profit_and_Loss"
+        / "cpa"
         / "Profit_and_Loss_2025-01-01_to_2025-12-31_accrual.pdf"
     )
     raw_path = (
         tmp_path
         / "01_Year-End_Profit_and_Loss"
+        / "dev"
         / "Profit_and_Loss_2025-01-01_to_2025-12-31_accrual_raw.json"
     )
     meta_path = tmp_path / "_meta" / "pnl_metadata.json"

@@ -106,3 +106,25 @@ def test_csv_writer_streaming_without_dedupe_writes_all_rows(tmp_path: Path) -> 
 
     lines = out.read_text(encoding="utf-8").splitlines()
     assert lines == ["txn_id,name", "A1,row1", "A1,dup"]
+
+
+def test_csv_writer_streaming_dedupes_across_chunked_generator_input(tmp_path: Path) -> None:
+    writer = CsvWriter()
+    out = tmp_path / "streaming_chunked.csv"
+
+    def monthly_rows() -> list[dict[str, str]]:
+        chunks = [
+            [{"txn_id": "JAN-1", "name": "jan"}, {"txn_id": "JAN-2", "name": "jan2"}],
+            [{"txn_id": "JAN-2", "name": "dup-feb"}, {"txn_id": "FEB-1", "name": "feb"}],
+        ]
+        for chunk in chunks:
+            yield from chunk
+
+    writer.write_rows_streaming(
+        out,
+        fieldnames=["txn_id", "name"],
+        rows=monthly_rows(),
+    )
+
+    lines = out.read_text(encoding="utf-8").splitlines()
+    assert lines == ["txn_id,name", "JAN-1,jan", "JAN-2,jan2", "FEB-1,feb"]

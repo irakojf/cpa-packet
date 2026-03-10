@@ -186,16 +186,19 @@ def test_pnl_deliverable_generates_artifacts_and_metadata(
     csv_path = (
         tmp_path
         / "01_Year-End_Profit_and_Loss"
+        / "cpa"
         / "Profit_and_Loss_2025-01-01_to_2025-12-31_accrual.csv"
     )
     pdf_path = (
         tmp_path
         / "01_Year-End_Profit_and_Loss"
+        / "cpa"
         / "Profit_and_Loss_2025-01-01_to_2025-12-31_accrual.pdf"
     )
     raw_path = (
         tmp_path
         / "01_Year-End_Profit_and_Loss"
+        / "dev"
         / "Profit_and_Loss_2025-01-01_to_2025-12-31_accrual_raw.json"
     )
     meta_path = tmp_path / "_meta" / "pnl_metadata.json"
@@ -246,6 +249,7 @@ def test_pnl_deliverable_respects_no_raw_flag(
     raw_path = (
         tmp_path
         / "01_Year-End_Profit_and_Loss"
+        / "dev"
         / "Profit_and_Loss_2025-01-01_to_2025-12-31_accrual_raw.json"
     )
     assert not raw_path.exists()
@@ -280,6 +284,7 @@ def test_pnl_deliverable_redacts_sensitive_raw_fields(
     raw_path = (
         tmp_path
         / "01_Year-End_Profit_and_Loss"
+        / "dev"
         / "Profit_and_Loss_2025-01-01_to_2025-12-31_accrual_raw.json"
     )
     raw_payload = json.loads(raw_path.read_text(encoding="utf-8"))
@@ -319,6 +324,7 @@ def test_pnl_deliverable_empty_report_writes_zero_summary_and_warning(
     csv_path = (
         tmp_path
         / "01_Year-End_Profit_and_Loss"
+        / "cpa"
         / "Profit_and_Loss_2025-01-01_to_2025-12-31_accrual.csv"
     )
     csv_lines = csv_path.read_text(encoding="utf-8").splitlines()
@@ -496,6 +502,7 @@ def test_pnl_deliverable_supports_cross_year_range_and_preserves_long_csv_labels
     csv_path = (
         tmp_path
         / "01_Year-End_Profit_and_Loss"
+        / "cpa"
         / "Profit_and_Loss_2024-10-01_to_2025-03-31_accrual.csv"
     )
     assert csv_path.exists()

@@ -3,25 +3,11 @@
 
 from __future__ import annotations
 
-import re
 import subprocess
 import sys
 from dataclasses import dataclass
 
-
-@dataclass(frozen=True)
-class PatternSpec:
-    name: str
-    regex: re.Pattern[str]
-
-
-PATTERNS: tuple[PatternSpec, ...] = (
-    PatternSpec("SSN", re.compile(r"\b\d{3}-\d{2}-\d{4}\b")),
-    PatternSpec("EIN", re.compile(r"\b\d{2}-\d{7}\b")),
-    PatternSpec("ITIN", re.compile(r"\b9\d{2}-\d{2}-\d{4}\b")),
-    PatternSpec("PHONE", re.compile(r"\b(?:\d{3}-\d{3}-\d{4}|\(\d{3}\)\s?\d{3}-\d{4})\b")),
-    PatternSpec("EMAIL", re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")),
-)
+from cpapacket.privacy.patterns import PATTERNS
 
 
 @dataclass(frozen=True)

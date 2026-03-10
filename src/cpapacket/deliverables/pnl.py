@@ -253,18 +253,22 @@ class PnlDeliverable:
         deliverable_dir.mkdir(parents=True, exist_ok=True)
         meta_dir = ctx.out_dir / "_meta"
         meta_dir.mkdir(parents=True, exist_ok=True)
+        cpa_dir = deliverable_dir / "cpa"
+        cpa_dir.mkdir(parents=True, exist_ok=True)
+        dev_dir = deliverable_dir / "dev"
+        dev_dir.mkdir(parents=True, exist_ok=True)
 
         start_date, end_date = _extract_report_date_range(report_payload, year=ctx.year)
         normalized_method = ctx.method.strip().lower() if ctx.method.strip() else "accrual"
         csv_name = f"Profit_and_Loss_{start_date}_to_{end_date}_{normalized_method}"
         base_name = f"Profit_and_Loss_{start_date}_to_{end_date}_{normalized_method}"
         csv_path = _resolve_output_path(
-            deliverable_dir / f"{csv_name}.csv",
+            cpa_dir / f"{csv_name}.csv",
             on_conflict=ctx.on_conflict,
             non_interactive=ctx.non_interactive,
         )
         pdf_path = _resolve_output_path(
-            deliverable_dir / f"{base_name}.pdf",
+            cpa_dir / f"{base_name}.pdf",
             on_conflict=ctx.on_conflict,
             non_interactive=ctx.non_interactive,
         )
@@ -272,7 +276,7 @@ class PnlDeliverable:
             None
             if ctx.no_raw
             else _resolve_output_path(
-                deliverable_dir / f"{base_name}_raw.json",
+                dev_dir / f"{base_name}_raw.json",
                 on_conflict=ctx.on_conflict,
                 non_interactive=ctx.non_interactive,
             )
@@ -356,9 +360,10 @@ def _write_pdf(
     writer = PdfWriter()
     body_lines = [
         PdfBodyLine(
-            text=f"{row.label}  {row.amount:.2f}",
+            text=row.label,
             level=row.level,
             row_type=row.row_type,
+            amount=f"{row.amount:,.2f}",
         )
         for row in rows
     ]

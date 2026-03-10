@@ -12,6 +12,14 @@ authors = [
   { name = "cpapacket contributors" }
 ]
 license = { text = "Proprietary" }
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Environment :: Console",
+  "Intended Audience :: Financial and Insurance Industry",
+  "Topic :: Office/Business :: Financial :: Accounting",
+]
 dependencies = [
   "click>=8.1.7,<9.0.0",
   "pydantic>=2.7.0,<3.0.0",
@@ -22,8 +30,13 @@ dependencies = [
   "platformdirs>=4.2.0,<5.0.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/irako/cpapacket"
+Repository = "https://github.com/irako/cpapacket"
+Issues = "https://github.com/irako/cpapacket/issues"
+
 [project.scripts]
-cpapacket = "cpapacket.cli.main:cli"
+cpapacket = "cpapacket.cli.main:main"
 
 [project.optional-dependencies]
 dev = [

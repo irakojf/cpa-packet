@@ -4,14 +4,39 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass
+from datetime import date
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
+from typing import Any, Protocol
 
 from cpapacket.core.filesystem import atomic_write, ensure_directory
+from cpapacket.deliverables.general_ledger import (
+    fetch_general_ledger_monthly_slices,
+    merge_general_ledger_monthly_slices,
+)
 from cpapacket.models.distributions import MiscodedDistributionCandidate
 from cpapacket.models.general_ledger import GeneralLedgerRow
+from cpapacket.models.retained_earnings import RetainedEarningsRollforward
 from cpapacket.reconciliation.miscode_detector import MiscodeDetector
-from cpapacket.utils.constants import DELIVERABLE_FOLDERS
+from cpapacket.utils.constants import DELIVERABLE_FOLDERS, RETAINED_EARNINGS_TOLERANCE
+
+_DISTRIBUTION_ACCOUNT_KEYWORDS = (
+    "distribution",
+    "draw",
+    "dividend",
+    "shareholder",
+    "stockholder",
+    "member",
+    "partner",
+)
+_NON_DISTRIBUTION_EQUITY_KEYWORDS = (
+    "retained earnings",
+    "common stock",
+    "preferred stock",
+    "paid in capital",
+    "additional paid in capital",
+    "opening balance equity",
+)
 
 
 @dataclass(frozen=True)
@@ -21,6 +46,85 @@ class ReMiscodingIntegrationResult:
     candidates: list[MiscodedDistributionCandidate]
     csv_path: Path
     wrote_csv: bool
+
+
+@dataclass(frozen=True)
+class RetainedEarningsSourceData:
+    """Cross-deliverable retained-earnings source values from provider layer."""
+
+    beginning_retained_earnings: Decimal
+    net_income: Decimal
+    distributions: Decimal
+    actual_ending_retained_earnings: Decimal
+    gl_rows: list[GeneralLedgerRow]
+
+
+class RetainedEarningsDataProvider(Protocol):
+    """Provider contract for retained-earnings rollforward source retrieval."""
+
+    def get_balance_sheet(self, year: int, as_of: date | str) -> dict[str, Any]:
+        """Return QBO balance sheet payload for year/as-of."""
+
+    def get_pnl(self, year: int, method: str) -> dict[str, Any]:
+        """Return QBO P&L payload for year/method."""
+
+    def get_general_ledger(self, year: int, month: int) -> dict[str, Any]:
+        """Return QBO general ledger payload for year/month."""
+
+
+def load_re_source_data(
+    *,
+    year: int,
+    provider: RetainedEarningsDataProvider,
+) -> RetainedEarningsSourceData:
+    """Load cross-deliverable RE source values via the shared provider layer."""
+    prior_year = year - 1
+    prior_balance_sheet = provider.get_balance_sheet(prior_year, f"{prior_year}-12-31")
+    current_balance_sheet = provider.get_balance_sheet(year, f"{year}-12-31")
+    pnl_payload = provider.get_pnl(year, "accrual")
+    gl_slices = fetch_general_ledger_monthly_slices(year=year, provider=provider)
+    gl_rows = list(merge_general_ledger_monthly_slices(gl_slices))
+
+    return RetainedEarningsSourceData(
+        beginning_retained_earnings=extract_retained_earnings_from_balance_sheet(
+            prior_balance_sheet
+        ),
+        net_income=extract_net_income_from_pnl_report(pnl_payload),
+        distributions=extract_distribution_total(gl_rows),
+        actual_ending_retained_earnings=extract_retained_earnings_from_balance_sheet(
+            current_balance_sheet
+        ),
+        gl_rows=gl_rows,
+    )
+
+
+def build_retained_earnings_rollforward(
+    *,
+    source: RetainedEarningsSourceData,
+    structural_flags: list[str],
+) -> RetainedEarningsRollforward:
+    """Construct a canonical retained earnings rollforward result."""
+    expected = (
+        source.beginning_retained_earnings
+        + source.net_income
+        - source.distributions
+    )
+    difference = expected - source.actual_ending_retained_earnings
+    status = (
+        "Balanced"
+        if difference.copy_abs() <= RETAINED_EARNINGS_TOLERANCE
+        else "Mismatch"
+    )
+    return RetainedEarningsRollforward(
+        beginning_re=source.beginning_retained_earnings,
+        net_income=source.net_income,
+        distributions=source.distributions,
+        expected_ending_re=expected,
+        actual_ending_re=source.actual_ending_retained_earnings,
+        difference=difference,
+        status=status,
+        flags=structural_flags,
+    )
 
 
 def extract_net_income_from_pnl_report(report_payload: dict[str, object]) -> Decimal:
@@ -58,11 +162,7 @@ def extract_distribution_total(gl_rows: list[GeneralLedgerRow]) -> Decimal:
     """Sum GL signed amounts for equity distribution/draw/shareholder rows."""
     total = Decimal("0.00")
     for row in gl_rows:
-        account_type = row.account_type.lower()
-        account_name = row.account_name.lower()
-        if "equity" not in account_type:
-            continue
-        if not any(keyword in account_name for keyword in ("distribution", "draw", "shareholder")):
+        if not _is_distribution_equity_row(row):
             continue
         total += row.signed_amount
     return total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
@@ -106,7 +206,11 @@ def integrate_miscoded_distributions(
     csv_path = distributions_dir / f"likely_miscoded_distributions_{year}.csv"
 
     if csv_path.exists():
-        return ReMiscodingIntegrationResult(candidates=candidates, csv_path=csv_path, wrote_csv=False)
+        return ReMiscodingIntegrationResult(
+            candidates=candidates,
+            csv_path=csv_path,
+            wrote_csv=False,
+        )
 
     _write_likely_miscoded_csv(csv_path, candidates)
     return ReMiscodingIntegrationResult(candidates=candidates, csv_path=csv_path, wrote_csv=True)
@@ -155,6 +259,23 @@ def _has_direct_retained_earnings_posting(gl_rows: list[GeneralLedgerRow]) -> bo
         if "retained earnings" in account_name:
             return True
     return False
+
+
+def _is_distribution_equity_row(row: GeneralLedgerRow) -> bool:
+    account_type = row.account_type.strip().lower()
+    account_name = row.account_name.strip().lower()
+    memo = (row.memo or "").strip().lower()
+
+    has_equity_signal = "equity" in account_type or "equity" in account_name
+    has_distribution_signal = any(
+        keyword in account_name or keyword in memo
+        for keyword in _DISTRIBUTION_ACCOUNT_KEYWORDS
+    )
+    has_non_distribution_signal = any(
+        keyword in account_name for keyword in _NON_DISTRIBUTION_EQUITY_KEYWORDS
+    )
+
+    return has_equity_signal and has_distribution_signal and not has_non_distribution_signal
 
 
 def _search_net_income_value(rows: list[object]) -> Decimal | None:

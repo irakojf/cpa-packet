@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from textwrap import dedent
 from typing import Any, cast
 
 from cpapacket.core.metadata import DeliverableMetadata, write_deliverable_metadata
@@ -198,3 +199,154 @@ def test_write_validation_report_outputs_meta_public_file(tmp_path: Path) -> Non
     text = report_path.read_text(encoding="utf-8")
     assert "Deliverables" in text
     assert "pnl" in text
+
+
+def test_validate_packet_deliverables_covers_all_statuses_and_counts(tmp_path: Path) -> None:
+    root = tmp_path / "packet"
+    present_folder = root / "01_Year-End_Profit_and_Loss"
+    incomplete_folder = root / "03_Full-Year_General_Ledger"
+    present_folder.mkdir(parents=True, exist_ok=True)
+    incomplete_folder.mkdir(parents=True, exist_ok=True)
+
+    present_csv = present_folder / "pnl.csv"
+    present_csv.write_text("header\n", encoding="utf-8")
+    _write_metadata(root, key="pnl", artifacts=[present_csv.relative_to(root).as_posix()])
+
+    incomplete_csv = incomplete_folder / "general_ledger.csv"
+    incomplete_csv.write_text("header\n", encoding="utf-8")
+    _write_metadata(
+        root,
+        key="general_ledger",
+        artifacts=[
+            incomplete_csv.relative_to(root).as_posix(),
+            "03_Full-Year_General_Ledger/general_ledger.pdf",
+        ],
+    )
+
+    result = validate_packet_deliverables(
+        packet_root=root,
+        registry=_registry(
+            _FakeDeliverable(key="pnl", folder="01_Year-End_Profit_and_Loss"),
+            _FakeDeliverable(key="general_ledger", folder="03_Full-Year_General_Ledger"),
+            _FakeDeliverable(key="balance_sheet", folder="02_Year-End_Balance_Sheet"),
+            _FakeDeliverable(key="payroll_summary", folder="04_Annual_Payroll_Summary"),
+        ),
+        skipped_keys={"payroll_summary"},
+    )
+
+    by_key = {item.key: item for item in result.records}
+    assert by_key["pnl"].status == "present"
+    assert by_key["general_ledger"].status == "incomplete"
+    assert by_key["balance_sheet"].status == "missing"
+    assert by_key["payroll_summary"].status == "skipped"
+    assert result.counts_by_status() == {
+        "present": 1,
+        "missing": 1,
+        "incomplete": 1,
+        "skipped": 1,
+    }
+    assert result.review_required() is True
+    assert result.recommended_exit_code() == 2
+
+
+def test_validation_result_recommended_exit_code_zero_when_no_review_needed(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "packet"
+    folder = root / "01_Year-End_Profit_and_Loss"
+    folder.mkdir(parents=True, exist_ok=True)
+    csv_path = folder / "pnl.csv"
+    csv_path.write_text("header\n", encoding="utf-8")
+    _write_metadata(root, key="pnl", artifacts=[csv_path.relative_to(root).as_posix()])
+
+    result = validate_packet_deliverables(
+        packet_root=root,
+        registry=_registry(
+            _FakeDeliverable(key="pnl", folder="01_Year-End_Profit_and_Loss"),
+            _FakeDeliverable(key="payroll_summary", folder="04_Annual_Payroll_Summary"),
+        ),
+        skipped_keys={"payroll_summary"},
+    )
+
+    assert result.review_required() is False
+    assert result.recommended_exit_code() == 0
+
+
+def test_render_validation_report_snapshot_all_statuses(tmp_path: Path) -> None:
+    root = tmp_path / "packet"
+    present_folder = root / "01_Year-End_Profit_and_Loss"
+    incomplete_folder = root / "03_Full-Year_General_Ledger"
+    present_folder.mkdir(parents=True, exist_ok=True)
+    incomplete_folder.mkdir(parents=True, exist_ok=True)
+
+    present_csv = present_folder / "pnl.csv"
+    present_csv.write_text("header\n", encoding="utf-8")
+    _write_metadata(root, key="pnl", artifacts=[present_csv.relative_to(root).as_posix()])
+
+    incomplete_csv = incomplete_folder / "general_ledger.csv"
+    incomplete_csv.write_text("header\n", encoding="utf-8")
+    _write_metadata(
+        root,
+        key="general_ledger",
+        artifacts=[
+            incomplete_csv.relative_to(root).as_posix(),
+            "03_Full-Year_General_Ledger/general_ledger.pdf",
+        ],
+    )
+
+    result = validate_packet_deliverables(
+        packet_root=root,
+        registry=_registry(
+            _FakeDeliverable(key="pnl", folder="01_Year-End_Profit_and_Loss"),
+            _FakeDeliverable(key="general_ledger", folder="03_Full-Year_General_Ledger"),
+            _FakeDeliverable(key="balance_sheet", folder="02_Year-End_Balance_Sheet"),
+            _FakeDeliverable(key="payroll_summary", folder="04_Annual_Payroll_Summary"),
+        ),
+        skipped_keys={"payroll_summary"},
+    )
+
+    report = render_validation_report(result)
+    expected = dedent(
+        """
+        CPA Packet Validation Report
+        ==========================
+
+        Summary
+        - Present: 1
+        - Missing: 1
+        - Incomplete: 1
+        - Skipped: 1
+        - Review Required: YES
+
+        Deliverables
+        - pnl [PRESENT]
+          expected:
+          - ^01_Year\\-End_Profit_and_Loss/pnl\\.csv$
+          found:
+          - 01_Year-End_Profit_and_Loss/pnl.csv
+
+        - general_ledger [INCOMPLETE]
+          expected:
+          - ^03_Full\\-Year_General_Ledger/general_ledger\\.csv$
+          - ^03_Full\\-Year_General_Ledger/general_ledger\\.pdf$
+          found:
+          - 03_Full-Year_General_Ledger/general_ledger.csv
+          missing:
+          - ^03_Full\\-Year_General_Ledger/general_ledger\\.pdf$
+          flag: REVIEW_REQUIRED
+
+        - balance_sheet [MISSING]
+          expected:
+          - ^02_Year\\-End_Balance_Sheet/[^/].+$
+          found: (none)
+          missing:
+          - ^02_Year\\-End_Balance_Sheet/[^/].+$
+          flag: REVIEW_REQUIRED
+
+        - payroll_summary [SKIPPED]
+          expected: (none)
+          found: (none)
+        """
+    ).lstrip()
+
+    assert report == expected

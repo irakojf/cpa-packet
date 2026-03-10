@@ -40,11 +40,84 @@ Never run commands that can cause irreversible data loss or major damage without
 
 **Permission prompts / approval prompts / confirmation prompts:** In 1-2 sentences, explain the the reasoning why a command needs permission or approval. Name any risks or tradeoffs to be aware of. 
 
-## Git Branch Policy
+## Git & Workspace Hygiene Rules
 
+These rules exist to reduce commit noise, concurrent-change pauses, and git sandbox friction in multi-agent swarms.
+
+0. General rules: 
 - Default branch is **main** (NEVER reference or use `master`).
 - All work happens on **main** or short-lived feature branches that merge to main.
 - If `master` exists for legacy reasons: keep it synchronized after main pushes (`git push origin main:master`).
+
+1. Before any git add / commit operation:
+   - Always run `git reset` first (unstages everything).
+   - Then explicitly stage **only** the files relevant to the current bead/task.
+   - Verify with `git diff --staged` or `git status --short` that **only** intended files are staged.
+   - Never rely on `git commit -a` or auto-staging — it picks up unrelated changes.
+
+2. Before committing:
+   - Run `git status` and confirm no unexpected pre-staged files or modified files outside your scope.
+   - If unexpected staged/modified files appear → pause, mail the swarm ("Detected pre-staged files not belonging to this bead: [list]"), and ask Human Overseer for direction (keep mixed commit / unstage & separate / revert extras).
+   - Commit message MUST reference the bead ID (e.g., "bd-2gy.19: add accounts_list.json fixture + tests").
+
+3. Sandbox / permission-aware git behavior:
+   - If any git command fails with "Operation not permitted", "index.lock", or permission error inside .git/:
+     - Do NOT retry the command.
+     - Immediately pause the current bead.
+     - Send MCP Agent Mail to Human Overseer: "Git write blocked by sandbox (.git/index.lock or permission denied). Request external fix."
+   - Never attempt to create, modify, or delete files inside .git/ directory.
+   - Human is responsible for git operations that require .git/ writes (checkout, commit, rebase, etc.) when sandbox blocks them.
+
+4. Concurrent change detection & pause:
+   - On detecting concurrent/inconsistent workspace state (untracked files appearing, .beads changes not authored by self, git status shows unexpected diffs):
+     - Pause immediately per concurrent-change rule.
+     - Mail swarm: "Detected concurrent changes: [describe]. Pausing for guidance."
+     - Do NOT proceed with destructive actions (rm, overwrite, commit) without explicit Human approval.
+   - Prefer releasing your own file reservations early if blocked, to avoid blocking others.
+
+5. Beads DB & reset safety:
+   - NEVER run `rm -rf .beads/` without explicit Human approval in the same message.
+   - Before reset: always check `git ls-files .beads/issues.jsonl` and `git log -- .beads/issues.jsonl` to confirm the file is tracked and has history.
+   - After reset sequence (rm -rf .beads/ → git checkout → br init → br sync --import-only):
+     - Immediately run `br doctor` and `bv --robot-priority` (or `bv --robot-next`).
+     - If 0 issues imported → mail Human: "issues.jsonl empty or missing after sync — beads appear lost. Request recovery."
+   - Use ONLY `br` and `bv` commands — legacy `bd` is forbidden.
+
+6. Commit frequency & granularity:
+   - Commit after completing a logical sub-task within a bead (small, frequent commits preferred).
+   - Avoid large, multi-file commits unless the entire change set belongs to one bead.
+   - If a bead spans many files → break it into smaller child beads (e.g., bd-2aq.10, bd-2aq.11).
+
+7. General principle:
+   - Minimize git noise and staging surprises — the goal is clean, auditable history per bead.
+   - When in doubt → pause, mail swarm/Human, and wait for direction rather than risk mixed commits or overwrites.
+   - Human override (RULE 0) always applies — explicit instructions supersede these rules.
+
+## Landing the Plane (Session Completion)
+
+**When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
+
+**MANDATORY WORKFLOW:**
+
+1. **File issues for remaining work** - Create issues for anything that needs follow-up
+2. **Run quality gates** (if code changed) - Tests, linters, builds
+3. **Update issue status** - Close finished work, update in-progress items
+4. **PUSH TO REMOTE** - This is MANDATORY:
+   ```bash
+   git pull --rebase
+   bd sync
+   git push
+   git status  # MUST show "up to date with origin"
+   ```
+5. **Clean up** - Clear stashes, prune remote branches
+6. **Verify** - All changes committed AND pushed
+7. **Hand off** - Provide context for next session
+
+**CRITICAL RULES:**
+- Work is NOT complete until `git push` succeeds
+- NEVER stop before pushing - that leaves work stranded locally
+- NEVER say "ready to push when you are" - YOU must push
+- If push fails, resolve and retry until it succeeds
 
 ## General Code Editing Discipline
 
@@ -57,6 +130,11 @@ Never run commands that can cause irreversible data loss or major damage without
 
 - **Backwards compatibility** — we usually do NOT care in early stages.  
   Prefer the **right** way now over shims/legacy support. Fix directly.
+
+- **Concurent changes** 
+    Before modifying any file outside your current bead, or if you see concurrent changes:
+    1. Send Agent Mail message: "Detected concurrent changes on <files>. Pausing. Waiting for guidance."
+    2. Stop all work and ask human how to proceed.
 
 ## Testing — The Safety Net
 
@@ -100,7 +178,70 @@ Regularly run variants of:
 
 ## Toolchain & Agent Workflow Expectations
 
+### Beads and Beads Viewer 
+- This project uses [beads_viewer](https://github.com/Dicklesworthstone/beads_viewer) for issue tracking. Issues are stored in `.beads/` and tracked in git.
 - Use **beads** (`br`, `bv`) for task tracking, dependency graphs, prioritization.
+- Use ONLY br (beads_rust) and bv. Legacy bd is forbidden.
+- On any DB error (not initialized, migrate required, cache rebuild fail, null constraint): 
+  1. rm -rf .beads/
+  2. git checkout HEAD -- .beads/
+  3. br init && br sync --import-only
+  4. Verify with br doctor / bv
+- Never run bd migrate or bd update on broken DB — escalate to human via Agent Mail.
+
+```bash
+# View issues (launches TUI - avoid in automated sessions)
+bv
+
+# CLI commands for agents (use these instead)
+bd ready              # Show issues ready to work (no blockers)
+bd list --status=open # All open issues
+bd show <id>          # Full issue details with dependencies
+bd create --title="..." --type=task --priority=2
+bd update <id> --status=in_progress
+bd close <id> --reason="Completed"
+bd close <id1> <id2>  # Close multiple issues at once
+bd sync               # Commit and push changes
+```
+
+### Workflow Pattern
+
+1. **Start**: Run `bd ready` to find actionable work
+2. **Claim**: Use `bd update <id> --status=in_progress`
+3. **Work**: Implement the task
+4. **Complete**: Use `bd close <id>`
+5. **Sync**: Always run `bd sync` at session end
+
+### Key Concepts
+
+- **Dependencies**: Issues can block other issues. `bd ready` shows only unblocked work.
+- **Priority**: P0=critical, P1=high, P2=medium, P3=low, P4=backlog (use numbers, not words)
+- **Types**: task, bug, feature, epic, question, docs
+- **Blocking**: `bd dep add <issue> <depends-on>` to add dependencies
+
+### Session Protocol
+
+**Before ending any session, run this checklist:**
+
+```bash
+git status              # Check what changed
+git add <files>         # Stage code changes
+bd sync                 # Commit beads changes
+git commit -m "..."     # Commit code
+bd sync                 # Commit any new beads changes
+git push                # Push to remote
+```
+
+### Best Practices
+
+- Check `bd ready` at session start to find available work
+- Update status as you work (in_progress → closed)
+- Create new issues with `bd create` when you discover tasks
+- Use descriptive titles and set appropriate priority/type
+- Always `bd sync` before ending session
+
+<!-- end-bv-agent-instructions -->
+
 - Coordinate via **MCP Agent Mail** — register, introduce yourself, respond promptly, avoid purgatory.
 - Search past sessions/logs with **cass** when needed.
 - Prioritize beads with `bv` (robot flags when appropriate).
@@ -118,13 +259,13 @@ Regularly run variants of:
 
 **Initialization prompt pattern (use this often):**
 
-> First read ALL of AGENTS.md and README.md super carefully and understand ALL of both!  
-> Then use your code investigation mode to fully understand the architecture and purpose.  
-> Register with MCP Agent Mail and introduce yourself.  
-> Check mail and respond if needed.  
-> Use bv to find the most impactful bead(s) you can usefully work on now.  
-> Proceed meticulously, mark beads, communicate via mail. Use ultrathink.  
-> **If a subtask is clearly mechanical/narrow and would benefit from delegation, feel free to spawn a subagent — but prefer full-agent swarm coordination via MCP mail when possible.**
+"First read ALL of AGENTS.md and README.md super carefully and understand ALL of both!  
+Then use your code investigation mode to fully understand the architecture and purpose.  
+Register with MCP Agent Mail and introduce yourself.  
+Check mail and respond if needed.  
+Use bv to find the most impactful bead(s) you can usefully work on now.  
+Proceed meticulously, mark beads, communicate via mail. Use ultrathink.  
+**If a subtask is clearly mechanical/narrow and would benefit from delegation, feel free to spawn a subagent — but prefer full-agent swarm coordination via MCP mail when possible.** " 
 
 
 **After compaction:**

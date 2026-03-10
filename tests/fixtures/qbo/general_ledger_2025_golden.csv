@@ -1,0 +1,26 @@
+txn_id,date,transaction_type,document_number,account_name,account_type,payee,memo,debit,credit,signed_amount
+txn-2024-12-31-boundary,2024-12-31,Boundary carryover from previous month,BNDRY-202412,Cash,Bank,,,120.00,0.00,120.00
+txn-2025-01-01-core,2025-01-01,Core month transaction,CORE-202501,Service Income,Income,,,450.00,0.00,450.00
+txn-2025-01-31-boundary,2025-01-31,Boundary overlap with next month,BNDRY-202501,Accounts Receivable,AccountsReceivable,,,310.00,0.00,310.00
+txn-2025-02-01-core,2025-02-01,Core month transaction,CORE-202502,Service Income,Income,,,450.00,0.00,450.00
+txn-2025-02-28-boundary,2025-02-28,Boundary overlap with next month,BNDRY-202502,Accounts Receivable,AccountsReceivable,,,310.00,0.00,310.00
+txn-2025-03-01-core,2025-03-01,Core month transaction,CORE-202503,Service Income,Income,,,450.00,0.00,450.00
+txn-2025-03-31-boundary,2025-03-31,Boundary overlap with next month,BNDRY-202503,Accounts Receivable,AccountsReceivable,,,310.00,0.00,310.00
+txn-2025-04-01-core,2025-04-01,Core month transaction,CORE-202504,Service Income,Income,,,450.00,0.00,450.00
+txn-2025-04-30-boundary,2025-04-30,Boundary overlap with next month,BNDRY-202504,Accounts Receivable,AccountsReceivable,,,310.00,0.00,310.00
+txn-2025-05-01-core,2025-05-01,Core month transaction,CORE-202505,Service Income,Income,,,450.00,0.00,450.00
+txn-2025-05-31-boundary,2025-05-31,Boundary overlap with next month,BNDRY-202505,Accounts Receivable,AccountsReceivable,,,310.00,0.00,310.00
+txn-2025-06-01-core,2025-06-01,Core month transaction,CORE-202506,Service Income,Income,,,450.00,0.00,450.00
+txn-2025-06-30-boundary,2025-06-30,Boundary overlap with next month,BNDRY-202506,Accounts Receivable,AccountsReceivable,,,310.00,0.00,310.00
+txn-2025-07-01-core,2025-07-01,Core month transaction,CORE-202507,Service Income,Income,,,450.00,0.00,450.00
+txn-2025-07-31-boundary,2025-07-31,Boundary overlap with next month,BNDRY-202507,Accounts Receivable,AccountsReceivable,,,310.00,0.00,310.00
+txn-2025-08-01-core,2025-08-01,Core month transaction,CORE-202508,Service Income,Income,,,450.00,0.00,450.00
+txn-2025-08-31-boundary,2025-08-31,Boundary overlap with next month,BNDRY-202508,Accounts Receivable,AccountsReceivable,,,310.00,0.00,310.00
+txn-2025-09-01-core,2025-09-01,Core month transaction,CORE-202509,Service Income,Income,,,450.00,0.00,450.00
+txn-2025-09-30-boundary,2025-09-30,Boundary overlap with next month,BNDRY-202509,Accounts Receivable,AccountsReceivable,,,310.00,0.00,310.00
+txn-2025-10-01-core,2025-10-01,Core month transaction,CORE-202510,Service Income,Income,,,450.00,0.00,450.00
+txn-2025-10-31-boundary,2025-10-31,Boundary overlap with next month,BNDRY-202510,Accounts Receivable,AccountsReceivable,,,310.00,0.00,310.00
+txn-2025-11-01-core,2025-11-01,Core month transaction,CORE-202511,Service Income,Income,,,450.00,0.00,450.00
+txn-2025-11-30-boundary,2025-11-30,Boundary overlap with next month,BNDRY-202511,Accounts Receivable,AccountsReceivable,,,310.00,0.00,310.00
+txn-2025-12-01-core,2025-12-01,Core month transaction,CORE-202512,Service Income,Income,,,450.00,0.00,450.00
+txn-2025-12-31-boundary,2025-12-31,Boundary overlap with next month,BNDRY-202512,Accounts Receivable,AccountsReceivable,,,310.00,0.00,310.00

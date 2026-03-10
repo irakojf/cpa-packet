@@ -23,7 +23,7 @@ def _coerce_money(value: object) -> Decimal:
     return decimal_value.quantize(_TWO_PLACES, rounding=ROUND_HALF_UP)
 
 
-class PayrollRun(BaseModel):  # type: ignore[misc]
+class PayrollRun(BaseModel):
     """Company-level totals for a single payroll run."""
 
     model_config = ConfigDict(frozen=True)
@@ -38,7 +38,7 @@ class PayrollRun(BaseModel):  # type: ignore[misc]
     employee_retirement_deferral: Decimal = Field(ge=Decimal("0.00"))
     employer_retirement_contribution: Decimal = Field(ge=Decimal("0.00"))
 
-    @field_validator("run_id")  # type: ignore[untyped-decorator]
+    @field_validator("run_id")
     @classmethod
     def _non_blank_id(cls, value: str) -> str:
         trimmed = value.strip()
@@ -46,7 +46,7 @@ class PayrollRun(BaseModel):  # type: ignore[misc]
             raise ValueError("must not be blank")
         return trimmed
 
-    @field_validator(  # type: ignore[untyped-decorator]
+    @field_validator(
         "wages",
         "employee_taxes",
         "employer_taxes",
@@ -59,7 +59,7 @@ class PayrollRun(BaseModel):  # type: ignore[misc]
         return _coerce_money(value)
 
 
-class EmployeePayrollBreakdown(BaseModel):  # type: ignore[misc]
+class EmployeePayrollBreakdown(BaseModel):
     """Per-employee payroll breakdown for one payroll run."""
 
     model_config = ConfigDict(frozen=True)
@@ -73,7 +73,7 @@ class EmployeePayrollBreakdown(BaseModel):  # type: ignore[misc]
     employee_retirement_deferral: Decimal = Field(ge=Decimal("0.00"))
     employer_retirement_contribution: Decimal = Field(ge=Decimal("0.00"))
 
-    @field_validator("run_id", "employee_id", "employee_name")  # type: ignore[untyped-decorator]
+    @field_validator("run_id", "employee_id", "employee_name")
     @classmethod
     def _non_blank_required_fields(cls, value: str) -> str:
         trimmed = value.strip()
@@ -81,7 +81,7 @@ class EmployeePayrollBreakdown(BaseModel):  # type: ignore[misc]
             raise ValueError("must not be blank")
         return trimmed
 
-    @field_validator(  # type: ignore[untyped-decorator]
+    @field_validator(
         "wages",
         "employee_taxes",
         "employer_taxes",
@@ -94,7 +94,7 @@ class EmployeePayrollBreakdown(BaseModel):  # type: ignore[misc]
         return _coerce_money(value)
 
 
-class CompanyPayrollSummary(BaseModel):  # type: ignore[misc]
+class CompanyPayrollSummary(BaseModel):
     """Tax-year company payroll totals split by required accounting categories."""
 
     model_config = ConfigDict(frozen=True)
@@ -107,7 +107,7 @@ class CompanyPayrollSummary(BaseModel):  # type: ignore[misc]
     employee_retirement_deferral_total: Decimal = Field(ge=Decimal("0.00"))
     employer_retirement_contribution_total: Decimal = Field(ge=Decimal("0.00"))
 
-    @field_validator(  # type: ignore[untyped-decorator]
+    @field_validator(
         "wages_total",
         "employee_taxes_total",
         "employer_taxes_total",

@@ -47,6 +47,10 @@ class ValidationResult:
     def review_required(self) -> bool:
         return any(record.status in {"missing", "incomplete"} for record in self.records)
 
+    def recommended_exit_code(self) -> int:
+        """Return process exit code recommendation for validation outcomes."""
+        return 2 if self.review_required() else 0
+
 
 def validate_packet_deliverables(
     *,
@@ -174,7 +178,10 @@ def _read_metadata_if_present(*, root: Path, deliverable_key: str) -> Deliverabl
     )
     for path in candidate_paths:
         if path.exists():
-            return read_deliverable_metadata(path)
+            try:
+                return read_deliverable_metadata(path)
+            except Exception:
+                continue
     return None
 
 

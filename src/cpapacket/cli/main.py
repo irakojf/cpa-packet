@@ -4,26 +4,71 @@ from __future__ import annotations
 
 import os
 import secrets
+import sys
+from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Literal, TextIO, cast
 
 import click
 
-from cpapacket.cli.balance_sheet import register_balance_sheet_command
+from cpapacket.cli.build import register_build_command
 from cpapacket.cli.check import register_check_command
+from cpapacket.cli.contractor_summary import register_contractor_summary_command
+from cpapacket.cli.distributions import register_distributions_command
 from cpapacket.cli.doctor import register_doctor_command
 from cpapacket.cli.general_ledger import register_general_ledger_command
+from cpapacket.cli.payroll_recon import register_payroll_recon_command
 from cpapacket.cli.payroll_summary import register_payroll_summary_command
 from cpapacket.cli.pnl import register_pnl_command
 from cpapacket.cli.privacy import register_privacy_command
+from cpapacket.cli.retained_earnings import register_retained_earnings_command
+from cpapacket.cli.tax_tracker import register_tax_tracker_command
 from cpapacket.clients.auth import OAuthTokenStore
 from cpapacket.clients.gusto import GustoOAuthClient, GustoOAuthConfig
 from cpapacket.clients.qbo import QboOAuthClient, QboOAuthConfig
 from cpapacket.core.context import RunContext, resolve_year_and_source
+from cpapacket.utils.logging import configure_logging
 
 MethodOption = Literal["accrual", "cash"]
 ConflictOption = Literal["prompt", "overwrite", "copy", "abort"]
+
+_ENV_ACTION_GUIDANCE: dict[str, str] = {
+    "CPAPACKET_QBO_CLIENT_ID": (
+        "Configure QBO OAuth environment variables and run `cpapacket auth qbo login`."
+    ),
+    "CPAPACKET_QBO_CLIENT_SECRET": (
+        "Configure QBO OAuth environment variables and run `cpapacket auth qbo login`."
+    ),
+    "CPAPACKET_QBO_REDIRECT_URI": (
+        "Configure QBO OAuth environment variables and run `cpapacket auth qbo login`."
+    ),
+    "CPAPACKET_GUSTO_CLIENT_ID": (
+        "Configure Gusto OAuth environment variables before running Gusto commands."
+    ),
+    "CPAPACKET_GUSTO_CLIENT_SECRET": (
+        "Configure Gusto OAuth environment variables before running Gusto commands."
+    ),
+    "CPAPACKET_GUSTO_REDIRECT_URI": (
+        "Configure Gusto OAuth environment variables before running Gusto commands."
+    ),
+}
+
+_HELP_EXAMPLES: dict[tuple[str, ...], str] = {
+    tuple(): "cpapacket --year 2025 build",
+    ("build",): "cpapacket --year 2025 --non-interactive build",
+    ("check",): "cpapacket --year 2025 check",
+    ("context-debug",): "cpapacket --year 2025 context-debug",
+    ("auth",): "cpapacket auth qbo status",
+    ("auth", "qbo"): "cpapacket auth qbo login",
+    ("auth", "qbo", "login"): "cpapacket auth qbo login --state <STATE>",
+    ("auth", "qbo", "status"): "cpapacket auth qbo status",
+    ("auth", "qbo", "logout"): "cpapacket auth qbo logout",
+    ("auth", "gusto"): "cpapacket auth gusto login",
+    ("auth", "gusto", "login"): "cpapacket auth gusto login --state <STATE>",
+    ("auth", "gusto", "status"): "cpapacket auth gusto status",
+    ("auth", "gusto", "logout"): "cpapacket auth gusto logout",
+}
 
 
 def _package_version() -> str:
@@ -51,7 +96,8 @@ def _detect_gusto_availability() -> bool:
 def _required_env(name: str) -> str:
     value = os.getenv(name, "").strip()
     if not value:
-        raise click.ClickException(f"Missing required environment variable: {name}")
+        guidance = _ENV_ACTION_GUIDANCE.get(name, "Set this variable and retry.")
+        raise click.ClickException(f"Missing required environment variable: {name}. {guidance}")
     return value
 
 
@@ -74,6 +120,43 @@ def _build_gusto_client() -> GustoOAuthClient:
             redirect_uri=_required_env("CPAPACKET_GUSTO_REDIRECT_URI"),
         )
     )
+
+
+def _resolve_non_interactive(explicit_non_interactive: bool, stdin: TextIO | None = None) -> bool:
+    """Auto-detect non-interactive mode unless explicitly enabled by the flag."""
+    if explicit_non_interactive:
+        return True
+    stream = stdin or sys.stdin
+    try:
+        return not stream.isatty()
+    except Exception:
+        return True
+
+
+def _help_example_for(path: tuple[str, ...]) -> str:
+    if path in _HELP_EXAMPLES:
+        return _HELP_EXAMPLES[path]
+    if not path:
+        return "cpapacket --help"
+    return f"cpapacket {' '.join(path)} --help"
+
+
+def _set_help_epilog(command: click.Command, path: tuple[str, ...]) -> None:
+    example = _help_example_for(path)
+    examples_block = f"Examples:\n  {example}"
+    existing = (command.epilog or "").strip()
+    if "Examples:" in existing:
+        return
+    command.epilog = examples_block if not existing else f"{existing}\n\n{examples_block}"
+
+
+def _inject_help_examples(group: click.Group, prefix: tuple[str, ...] = tuple()) -> None:
+    _set_help_epilog(group, prefix)
+    for name, command in group.commands.items():
+        path = (*prefix, name)
+        _set_help_epilog(command, path)
+        if isinstance(command, click.Group):
+            _inject_help_examples(command, path)
 
 
 def build_run_context(
@@ -155,6 +238,12 @@ def build_run_context(
 @click.option("--verbose", "-v", is_flag=True, help="Set console logging to DEBUG.")
 @click.option("--quiet", "-q", is_flag=True, help="Set console logging to WARNING.")
 @click.option("--plain", is_flag=True, help="Disable rich formatting.")
+@click.option(
+    "--out-dir",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Output directory. Defaults to exports/<timestamp>/ under cwd.",
+)
 @click.pass_context
 def cli(
     ctx: click.Context,
@@ -173,17 +262,25 @@ def cli(
     verbose: bool,
     quiet: bool,
     plain: bool,
+    out_dir: Path | None,
 ) -> None:
     """cpapacket command group."""
     if show_version:
         click.echo(_package_version())
         ctx.exit(0)
 
+    if out_dir is None:
+        timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+        out_dir = Path.cwd() / "exports" / timestamp
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    resolved_non_interactive = _resolve_non_interactive(non_interactive)
     run_context = build_run_context(
         year=year,
-        out_dir=Path.cwd(),
+        out_dir=out_dir,
         method=cast(MethodOption, method.lower()),
-        non_interactive=non_interactive,
+        non_interactive=resolved_non_interactive,
         on_conflict=cast(ConflictOption | None, on_conflict.lower() if on_conflict else None),
         incremental=incremental,
         force=force,
@@ -197,17 +294,28 @@ def cli(
         owner_keywords_raw=owner_keywords,
     )
 
+    configure_logging(
+        verbose=run_context.verbose,
+        quiet=run_context.quiet,
+        plain=run_context.plain,
+    )
+
     ctx.ensure_object(dict)
     ctx.obj["run_context"] = run_context
 
 
 register_pnl_command(cli)
-register_balance_sheet_command(cli)
 register_general_ledger_command(cli)
 register_payroll_summary_command(cli)
+register_payroll_recon_command(cli)
+register_contractor_summary_command(cli)
+register_distributions_command(cli)
 register_check_command(cli)
+register_build_command(cli)
 register_doctor_command(cli)
 register_privacy_command(cli)
+register_retained_earnings_command(cli)
+register_tax_tracker_command(cli)
 
 
 @cli.command("context-debug")
@@ -218,12 +326,12 @@ def context_debug(ctx: click.Context) -> None:
     click.echo(run_context.model_dump_json(indent=2))
 
 
-@cli.group("auth")
+@cli.group("auth", invoke_without_command=False, no_args_is_help=False)
 def auth_group() -> None:
     """Authentication commands for external providers."""
 
 
-@auth_group.group("qbo")
+@auth_group.group("qbo", invoke_without_command=False, no_args_is_help=False)
 def auth_qbo_group() -> None:
     """QuickBooks Online OAuth commands."""
 
@@ -275,7 +383,7 @@ def auth_qbo_logout() -> None:
     click.echo("QBO token cleared.")
 
 
-@auth_group.group("gusto")
+@auth_group.group("gusto", invoke_without_command=False, no_args_is_help=False)
 def auth_gusto_group() -> None:
     """Gusto OAuth commands."""
 
@@ -323,6 +431,9 @@ def auth_gusto_logout() -> None:
     """Clear stored Gusto token."""
     OAuthTokenStore("gusto").clear_token()
     click.echo("Gusto token cleared.")
+
+
+_inject_help_examples(cli)
 
 
 def main(argv: list[str] | None = None) -> Any:

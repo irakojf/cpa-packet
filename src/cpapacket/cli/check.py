@@ -6,6 +6,9 @@ import os
 from typing import cast
 
 import click
+from rich.console import Console
+from rich.panel import Panel
+from rich.text import Text
 
 from cpapacket.clients.qbo import QboOAuthClient, QboOAuthConfig
 from cpapacket.core.context import RunContext
@@ -15,6 +18,7 @@ from cpapacket.packet.health_check import (
     DataHealthCheck,
     DataHealthCheckContext,
     check_open_prior_year_items,
+    check_payroll_sync_status,
     check_suspense_accounts_balance,
     check_uncategorized_transactions,
     check_undeposited_funds_balance,
@@ -49,7 +53,44 @@ def _default_checks() -> tuple[DataHealthCheck, ...]:
         check_undeposited_funds_balance,
         check_suspense_accounts_balance,
         check_open_prior_year_items,
+        check_payroll_sync_status,
     )
+
+
+def _use_rich_panels(run_context: RunContext) -> bool:
+    return not run_context.plain and not bool(os.getenv("NO_COLOR"))
+
+
+def _emit_panel(message: str, *, title: str, style: str) -> None:
+    console = Console(stderr=True, markup=False)
+    console.print(
+        Panel.fit(
+            Text(message),
+            title=title,
+            border_style=style,
+        )
+    )
+
+
+def _emit_warning(run_context: RunContext, message: str) -> None:
+    if _use_rich_panels(run_context):
+        _emit_panel(message, title="Warning", style="yellow")
+        return
+    click.echo(f"WARNING: {message}", err=True)
+
+
+def _emit_error(run_context: RunContext, message: str) -> None:
+    if _use_rich_panels(run_context):
+        _emit_panel(message, title="Error", style="red")
+        return
+    click.echo(f"ERROR: {message}", err=True)
+
+
+def _emit_success(run_context: RunContext, message: str) -> None:
+    if _use_rich_panels(run_context):
+        _emit_panel(message, title="Success", style="green")
+        return
+    click.echo(f"SUCCESS: {message}")
 
 
 def register_check_command(cli_group: click.Group) -> None:
@@ -76,13 +117,13 @@ def register_check_command(cli_group: click.Group) -> None:
         )
         report_path = write_data_health_report(output_root=run_context.out_dir, report=report)
 
-        click.echo("Data health check complete.")
+        _emit_success(run_context, "Data health check complete.")
         click.echo(f"Report: {report_path}")
 
         if report.has_issues:
-            click.echo(f"Warnings found: {len(report.issues)}")
+            _emit_warning(run_context, f"Warnings found: {len(report.issues)}")
             for issue in report.issues:
-                click.echo(f"WARNING [{issue.code}] {issue.message}")
+                _emit_warning(run_context, f"[{issue.code}] {issue.message}")
 
         proceed = should_continue_after_report(
             report=report,
@@ -90,4 +131,6 @@ def register_check_command(cli_group: click.Group) -> None:
             confirm=lambda message: click.confirm(message, default=False),
         )
         if not proceed:
-            raise click.ClickException(f"Aborted by user: {prompt_message()}")
+            abort_message = f"Aborted by user: {prompt_message()}"
+            _emit_error(run_context, abort_message)
+            raise click.exceptions.Exit(1)

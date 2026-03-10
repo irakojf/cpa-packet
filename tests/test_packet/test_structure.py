@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from cpapacket.packet.structure import PacketStructureManager
 
 
@@ -79,3 +81,26 @@ def test_resolve_deliverable_dir_creates_when_requested(tmp_path: Path) -> None:
 
     assert target.exists()
     assert target.is_dir()
+
+
+def test_resolve_deliverable_dir_maps_multiple_known_keys(tmp_path: Path) -> None:
+    packet_root = tmp_path / "Example_2025_CPA_Packet"
+
+    general_ledger_dir = PacketStructureManager.resolve_deliverable_dir(
+        packet_root,
+        deliverable_key="general_ledger",
+        create=False,
+    )
+
+    assert general_ledger_dir == packet_root / "03_Full-Year_General_Ledger"
+
+
+def test_resolve_deliverable_dir_rejects_unknown_key(tmp_path: Path) -> None:
+    packet_root = tmp_path / "Example_2025_CPA_Packet"
+
+    with pytest.raises(KeyError, match="unknown deliverable key"):
+        PacketStructureManager.resolve_deliverable_dir(
+            packet_root,
+            deliverable_key="not_a_deliverable",
+            create=False,
+        )

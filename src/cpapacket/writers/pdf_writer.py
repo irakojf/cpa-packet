@@ -19,6 +19,7 @@ class PdfBodyLine:
     text: str
     level: int = 0
     row_type: Literal["account", "header", "subtotal", "total"] = "account"
+    amount: str | None = None
 
 
 @dataclass(frozen=True)
@@ -140,6 +141,10 @@ class PdfWriter:
             x = config.margin_left + indent
             text = _truncate_with_ellipsis(line.text, max_chars=config.max_account_name_chars)
             pdf.drawString(x, y, text)
+
+            if line.amount is not None:
+                amount_x = width - config.margin_right
+                pdf.drawRightString(amount_x, y, line.amount)
 
             if line.row_type == "subtotal":
                 pdf.line(x, y - 2, width - config.margin_right, y - 2)

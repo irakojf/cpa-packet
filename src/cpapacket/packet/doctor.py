@@ -63,14 +63,22 @@ def run_qbo_connectivity_check(
     try:
         payload = company_info_probe()
     except Exception as exc:
+        guidance = "Verify network access and QBO credentials, then rerun `cpapacket doctor`."
+        error_text = str(exc).lower()
+        if "403" in error_text and "quickbooks.api.intuit.com" in error_text:
+            guidance = (
+                "Verify CPAPACKET_QBO_REALM_ID matches the authorized company and app environment. "
+                "For sandbox companies, set "
+                "`CPAPACKET_QBO_API_BASE_URL=https://sandbox-quickbooks.api.intuit.com/"
+                "v3/company`, "
+                "re-authenticate with `cpapacket auth qbo login`, then rerun `cpapacket doctor`."
+            )
         return DoctorCheckResult(
             check_name="qbo_connectivity",
             status="fail",
             summary="QBO connectivity check failed.",
             details=[f"probe_error={exc}"],
-            guidance=(
-                "Verify network access and QBO credentials, then rerun `cpapacket doctor`."
-            ),
+            guidance=guidance,
         )
 
     company_name = _extract_company_name(payload)

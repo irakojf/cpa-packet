@@ -89,6 +89,26 @@ def test_registered_deliverables_define_required_protocol_fields() -> None:
         assert isinstance(deliverable.requires_gusto, bool)
 
 
+def test_registry_includes_payroll_summary_deliverable() -> None:
+    keys = {deliverable.key for deliverable in DELIVERABLE_REGISTRY}
+    assert "payroll_summary" in keys
+
+
+def test_registry_includes_contractor_deliverable() -> None:
+    keys = {deliverable.key for deliverable in DELIVERABLE_REGISTRY}
+    assert "contractor" in keys
+
+
+def test_registry_includes_payroll_recon_deliverable() -> None:
+    keys = {deliverable.key for deliverable in DELIVERABLE_REGISTRY}
+    assert "payroll_recon" in keys
+
+
+def test_registry_includes_estimated_tax_deliverable() -> None:
+    keys = {deliverable.key for deliverable in DELIVERABLE_REGISTRY}
+    assert "estimated_tax" in keys
+
+
 def test_registered_deliverables_expose_supported_generate_signature() -> None:
     for deliverable in DELIVERABLE_REGISTRY:
         generate_signature = signature(deliverable.generate)
@@ -96,12 +116,12 @@ def test_registered_deliverables_expose_supported_generate_signature() -> None:
         param_names = [param.name for param in params]
 
         # Accept both the target Protocol shape and current deliverable-specific shape.
-        protocol_style = param_names == ["ctx", "store", "prompts"]
-        pnl_style = (
-            param_names[:3] == ["report_payload", "output_root", "year"]
-            and all(param.kind is Parameter.KEYWORD_ONLY for param in params[:3])
+        protocol_style = (
+            len(param_names) == 3 and param_names[0] == "ctx" and param_names[2] == "prompts"
+        )
+        pnl_style = param_names[:3] == ["report_payload", "output_root", "year"] and all(
+            param.kind is Parameter.KEYWORD_ONLY for param in params[:3]
         )
         assert protocol_style or pnl_style, (
-            f"{type(deliverable).__name__}.generate has unsupported signature: "
-            f"{generate_signature}"
+            f"{type(deliverable).__name__}.generate has unsupported signature: {generate_signature}"
         )

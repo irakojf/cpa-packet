@@ -105,6 +105,31 @@ def test_oauth_token_store_clear_writes_revoked_marker(tmp_path: Path, monkeypat
     assert store.load_token() is None
 
 
+def test_oauth_token_store_save_mirrors_fallback_when_keyring_write_succeeds(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr("cpapacket.clients.auth._KEYRING_AVAILABLE", False)
+
+    store = OAuthTokenStore("qbo", config_root=tmp_path)
+    store.clear_token()
+    assert store.load_token() is None
+
+    monkeypatch.setattr(store, "_save_to_keyring", lambda payload: True)
+    monkeypatch.setattr(store, "_load_from_keyring", lambda: None)
+
+    token = OAuthToken.from_token_response(
+        access_token="access-3",
+        refresh_token="refresh-3",
+        expires_in_seconds=3600,
+    )
+    store.save_token(token)
+    loaded = store.load_token()
+
+    assert loaded is not None
+    assert loaded.access_token == "access-3"
+    assert loaded.refresh_token == "refresh-3"
+
+
 def test_refresh_lock_yields_without_error(tmp_path: Path) -> None:
     store = OAuthTokenStore("qbo", config_root=tmp_path)
 

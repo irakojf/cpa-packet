@@ -141,6 +141,23 @@ def test_run_qbo_connectivity_check_fails_when_probe_errors() -> None:
     )
 
 
+def test_run_qbo_connectivity_check_403_has_realm_environment_guidance() -> None:
+    def failing_probe() -> dict[str, object]:
+        raise RuntimeError(
+            "Client error '403 Forbidden' for url "
+            "'https://quickbooks.api.intuit.com/v3/company/123/companyinfo/123'"
+        )
+
+    result = run_qbo_connectivity_check(company_info_probe=failing_probe)
+
+    assert result.status == "fail"
+    assert result.summary == "QBO connectivity check failed."
+    assert "probe_error=Client error '403 Forbidden'" in result.details[0]
+    assert result.guidance is not None
+    assert "CPAPACKET_QBO_REALM_ID" in result.guidance
+    assert "CPAPACKET_QBO_API_BASE_URL" in result.guidance
+
+
 def test_run_gusto_token_check_passes_when_not_configured() -> None:
     token = _token_with_expiry(3600)
     result = run_gusto_token_check(

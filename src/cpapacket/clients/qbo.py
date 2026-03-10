@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import os
+import random
+import time
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
@@ -14,11 +18,18 @@ from cpapacket.clients.auth import (
     build_authorization_url,
     generate_pkce_pair,
 )
+from cpapacket.core.retry import RetryPolicy, compute_backoff_delay, parse_retry_after
 
 QBO_AUTHORIZE_URL = "https://appcenter.intuit.com/connect/oauth2"
 QBO_TOKEN_URL = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer"
 QBO_API_BASE_URL = "https://quickbooks.api.intuit.com/v3/company"
+QBO_API_BASE_URL_ENV = "CPAPACKET_QBO_API_BASE_URL"
 QBO_SCOPES = ("com.intuit.quickbooks.accounting",)
+
+
+def _default_api_base_url() -> str:
+    raw = os.getenv(QBO_API_BASE_URL_ENV, "").strip()
+    return raw or QBO_API_BASE_URL
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,7 +40,7 @@ class QboOAuthConfig:
     realm_id: str | None = None
     authorize_url: str = QBO_AUTHORIZE_URL
     token_url: str = QBO_TOKEN_URL
-    api_base_url: str = QBO_API_BASE_URL
+    api_base_url: str = field(default_factory=_default_api_base_url)
 
 
 class QboOAuthClient:
@@ -42,10 +53,16 @@ class QboOAuthClient:
         token_store: OAuthTokenStore | None = None,
         http_client: httpx.Client | None = None,
         timeout: float = 30.0,
+        retry_policy: RetryPolicy | None = None,
+        sleep_fn: Callable[[float], None] | None = None,
+        rand_fn: Callable[[], float] | None = None,
     ) -> None:
         self._config = config
         self._token_store = token_store if token_store is not None else OAuthTokenStore("qbo")
         self._http = http_client if http_client is not None else httpx.Client(timeout=timeout)
+        self._retry_policy = retry_policy if retry_policy is not None else RetryPolicy()
+        self._sleep_fn = sleep_fn if sleep_fn is not None else time.sleep
+        self._rand_fn = rand_fn if rand_fn is not None else random.random
 
         self._provider_config = OAuthProviderConfig(
             provider_name="qbo",
@@ -113,24 +130,28 @@ class QboOAuthClient:
         """Perform an authorized QBO request with one refresh-on-401 retry."""
         token = self.get_valid_token()
         url = self._build_api_url(endpoint)
-        response = self._http.request(
-            method=method,
-            url=url,
-            params=params,
-            json=json_body,
-            headers=self._auth_headers(token.access_token),
+        response = self._retry_response(
+            lambda: self._http.request(
+                method=method,
+                url=url,
+                params=params,
+                json=json_body,
+                headers=self._auth_headers(token.access_token),
+            )
         )
         if response.status_code != 401:
             response.raise_for_status()
             return response
 
         refreshed = self.refresh_access_token(token.refresh_token)
-        retry = self._http.request(
-            method=method,
-            url=url,
-            params=params,
-            json=json_body,
-            headers=self._auth_headers(refreshed.access_token),
+        retry = self._retry_response(
+            lambda: self._http.request(
+                method=method,
+                url=url,
+                params=params,
+                json=json_body,
+                headers=self._auth_headers(refreshed.access_token),
+            )
         )
         retry.raise_for_status()
         return retry
@@ -184,6 +205,42 @@ class QboOAuthClient:
         base = self._config.api_base_url.rstrip("/")
         suffix = endpoint if endpoint.startswith("/") else f"/{endpoint}"
         return f"{base}/{self._config.realm_id}{suffix}"
+
+    def _retry_response(self, sender: Callable[[], httpx.Response]) -> httpx.Response:
+        retry_429 = 0
+        retry_5xx = 0
+
+        while True:
+            response = sender()
+            if response.status_code == 429:
+                if retry_429 >= self._retry_policy.max_429:
+                    return response
+                retry_429 += 1
+                delay = parse_retry_after(response.headers.get("Retry-After"))
+                if delay is None:
+                    delay = compute_backoff_delay(
+                        attempt=retry_429,
+                        base_delay_seconds=self._retry_policy.base_delay_seconds,
+                        jitter_ratio=self._retry_policy.jitter_ratio,
+                        rand=self._rand_fn,
+                    )
+                self._sleep_fn(delay)
+                continue
+
+            if 500 <= response.status_code <= 599:
+                if retry_5xx >= self._retry_policy.max_5xx:
+                    return response
+                retry_5xx += 1
+                delay = compute_backoff_delay(
+                    attempt=retry_5xx,
+                    base_delay_seconds=self._retry_policy.base_delay_seconds,
+                    jitter_ratio=self._retry_policy.jitter_ratio,
+                    rand=self._rand_fn,
+                )
+                self._sleep_fn(delay)
+                continue
+
+            return response
 
     @staticmethod
     def _auth_headers(access_token: str) -> dict[str, str]:

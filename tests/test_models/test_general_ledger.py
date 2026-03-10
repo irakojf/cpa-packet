@@ -93,6 +93,22 @@ def test_general_ledger_row_optional_text_is_normalized() -> None:
     assert row.memo is None
 
 
+def test_general_ledger_row_optional_text_defaults_to_none_when_omitted() -> None:
+    row = GeneralLedgerRow(
+        txn_id="txn",
+        date=date(2025, 1, 15),
+        transaction_type="Journal Entry",
+        document_number="JE-1",
+        account_name="Cash",
+        account_type="Asset",
+        debit="5.00",
+        credit="2.00",
+    )
+
+    assert row.payee is None
+    assert row.memo is None
+
+
 def test_general_ledger_row_is_frozen() -> None:
     row = GeneralLedgerRow(
         txn_id="txn",

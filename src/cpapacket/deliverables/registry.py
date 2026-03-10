@@ -3,20 +3,129 @@
 from __future__ import annotations
 
 from collections import deque
-from typing import Iterable, Sequence
+from collections.abc import Iterable, Sequence
 
 from cpapacket.deliverables.base import Deliverable
 
+GeneralLedgerDeliverableCtor: type[Deliverable] | None
 try:
-    from cpapacket.deliverables.pnl import PnlDeliverable
+    from cpapacket.deliverables.general_ledger import (
+        GeneralLedgerDeliverable as _GeneralLedgerDeliverable,
+    )
 except Exception:  # pragma: no cover - best-effort bootstrap during early scaffolding
-    PnlDeliverable = None  # type: ignore[assignment]
+    GeneralLedgerDeliverableCtor = None
+else:
+    GeneralLedgerDeliverableCtor = _GeneralLedgerDeliverable
+
+PnlDeliverableCtor: type[Deliverable] | None
+try:
+    from cpapacket.deliverables.pnl import PnlDeliverable as _PnlDeliverable
+except Exception:  # pragma: no cover - best-effort bootstrap during early scaffolding
+    PnlDeliverableCtor = None
+else:
+    PnlDeliverableCtor = _PnlDeliverable
+
+DistributionsDeliverableCtor: type[Deliverable] | None
+try:
+    from cpapacket.deliverables.distributions import (
+        DistributionsDeliverable as _DistributionsDeliverable,
+    )
+except Exception:  # pragma: no cover - best-effort bootstrap during early scaffolding
+    DistributionsDeliverableCtor = None
+else:
+    DistributionsDeliverableCtor = _DistributionsDeliverable
+
+PayrollSummaryDeliverableCtor: type[Deliverable] | None
+try:
+    from cpapacket.deliverables.payroll_summary import (
+        PayrollSummaryDeliverable as _PayrollSummaryDeliverable,
+    )
+except Exception:  # pragma: no cover - best-effort bootstrap during early scaffolding
+    PayrollSummaryDeliverableCtor = None
+else:
+    PayrollSummaryDeliverableCtor = _PayrollSummaryDeliverable
+
+ContractorSummaryDeliverableCtor: type[Deliverable] | None
+try:
+    from cpapacket.deliverables.contractor_summary import (
+        ContractorSummaryDeliverable as _ContractorSummaryDeliverable,
+    )
+except Exception:  # pragma: no cover - best-effort bootstrap during early scaffolding
+    ContractorSummaryDeliverableCtor = None
+else:
+    ContractorSummaryDeliverableCtor = _ContractorSummaryDeliverable
+
+PayrollReconDeliverableCtor: type[Deliverable] | None
+try:
+    from cpapacket.deliverables.payroll_recon import (
+        PayrollReconDeliverable as _PayrollReconDeliverable,
+    )
+except Exception:  # pragma: no cover - best-effort bootstrap during early scaffolding
+    PayrollReconDeliverableCtor = None
+else:
+    PayrollReconDeliverableCtor = _PayrollReconDeliverable
+
+TaxTrackerDeliverableCtor: type[Deliverable] | None
+try:
+    from cpapacket.deliverables.tax_tracker import TaxTrackerDeliverable as _TaxTrackerDeliverable
+except Exception:  # pragma: no cover - best-effort bootstrap during early scaffolding
+    TaxTrackerDeliverableCtor = None
+else:
+    TaxTrackerDeliverableCtor = _TaxTrackerDeliverable
+
+BalanceSheetDeliverableCtor: type[Deliverable] | None
+try:
+    from cpapacket.deliverables.balance_sheet import (
+        BalanceSheetDeliverable as _BalanceSheetDeliverable,
+    )
+except Exception:  # pragma: no cover - best-effort bootstrap during early scaffolding
+    BalanceSheetDeliverableCtor = None
+else:
+    BalanceSheetDeliverableCtor = _BalanceSheetDeliverable
+
+PriorBalanceSheetDeliverableCtor: type[Deliverable] | None
+try:
+    from cpapacket.deliverables.balance_sheet import (
+        PriorBalanceSheetDeliverable as _PriorBalanceSheetDeliverable,
+    )
+except Exception:  # pragma: no cover - best-effort bootstrap during early scaffolding
+    PriorBalanceSheetDeliverableCtor = None
+else:
+    PriorBalanceSheetDeliverableCtor = _PriorBalanceSheetDeliverable
+
+RetainedEarningsDeliverableCtor: type[Deliverable] | None
+try:
+    from cpapacket.deliverables.retained_earnings import (
+        RetainedEarningsDeliverable as _RetainedEarningsDeliverable,
+    )
+except Exception:  # pragma: no cover - best-effort bootstrap during early scaffolding
+    RetainedEarningsDeliverableCtor = None
+else:
+    RetainedEarningsDeliverableCtor = _RetainedEarningsDeliverable
 
 
 def _build_default_registry() -> tuple[Deliverable, ...]:
     entries: list[Deliverable] = []
-    if PnlDeliverable is not None:
-        entries.append(PnlDeliverable())
+    if PnlDeliverableCtor is not None:
+        entries.append(PnlDeliverableCtor())
+    if BalanceSheetDeliverableCtor is not None:
+        entries.append(BalanceSheetDeliverableCtor())
+    if GeneralLedgerDeliverableCtor is not None:
+        entries.append(GeneralLedgerDeliverableCtor())
+    if PayrollSummaryDeliverableCtor is not None:
+        entries.append(PayrollSummaryDeliverableCtor())
+    if ContractorSummaryDeliverableCtor is not None:
+        entries.append(ContractorSummaryDeliverableCtor())
+    if DistributionsDeliverableCtor is not None:
+        entries.append(DistributionsDeliverableCtor())
+    if TaxTrackerDeliverableCtor is not None:
+        entries.append(TaxTrackerDeliverableCtor())
+    if PriorBalanceSheetDeliverableCtor is not None:
+        entries.append(PriorBalanceSheetDeliverableCtor())
+    if RetainedEarningsDeliverableCtor is not None:
+        entries.append(RetainedEarningsDeliverableCtor())
+    if PayrollReconDeliverableCtor is not None:
+        entries.append(PayrollReconDeliverableCtor())
     return tuple(entries)
 
 
@@ -54,9 +163,7 @@ def get_ordered_registry(
             include.add(key)
             for dependency in by_key[key].dependencies:
                 if dependency not in by_key:
-                    raise KeyError(
-                        f"Deliverable '{key}' depends on missing key '{dependency}'"
-                    )
+                    raise KeyError(f"Deliverable '{key}' depends on missing key '{dependency}'")
                 stack.append(dependency)
 
     indegree: dict[str, int] = {key: 0 for key in include}
@@ -74,7 +181,7 @@ def get_ordered_registry(
     queue = deque(
         sorted(
             (key for key, degree in indegree.items() if degree == 0),
-            key=declaration_rank.get,
+            key=lambda item: declaration_rank[item],
         )
     )
 
@@ -82,7 +189,7 @@ def get_ordered_registry(
     while queue:
         key = queue.popleft()
         ordered_keys.append(key)
-        for dependent in sorted(adjacency[key], key=declaration_rank.get):
+        for dependent in sorted(adjacency[key], key=lambda item: declaration_rank[item]):
             indegree[dependent] -= 1
             if indegree[dependent] == 0:
                 queue.append(dependent)

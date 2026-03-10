@@ -333,3 +333,33 @@ def test_retry_default_policy() -> None:
 
     result = operation()
     assert result.status_code == 200
+
+
+def test_retry_request_respx_429_honors_retry_after_header() -> None:
+    httpx = pytest.importorskip("httpx")
+    respx = pytest.importorskip("respx")
+    slept: list[float] = []
+
+    with httpx.Client() as client:
+
+        @retry_request(
+            policy=RetryPolicy(max_429=1, max_5xx=0, base_delay_seconds=0.25, jitter_ratio=0.0),
+            sleep=slept.append,
+            rand=lambda: 0.5,
+        )
+        def operation() -> object:
+            return client.get("https://api.example.test/retry")
+
+        with respx.mock(assert_all_called=True) as router:
+            route = router.get("https://api.example.test/retry").mock(
+                side_effect=[
+                    httpx.Response(429, headers={"Retry-After": "2"}),
+                    httpx.Response(200, json={"ok": True}),
+                ],
+            )
+            result = operation()
+
+    assert isinstance(result, httpx.Response)
+    assert result.status_code == 200
+    assert route.call_count == 2
+    assert slept == [2.0]

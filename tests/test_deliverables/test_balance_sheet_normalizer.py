@@ -99,6 +99,53 @@ def test_normalize_balance_sheet_rows_handles_empty_or_invalid_shapes() -> None:
     assert normalize_balance_sheet_rows({"Rows": {"Row": "not-a-list"}}) == []
 
 
+def test_normalize_balance_sheet_rows_parses_parentheses_negative_amounts() -> None:
+    payload = {
+        "Rows": {
+            "Row": [
+                {
+                    "Header": {"ColData": [{"value": "Assets"}]},
+                    "Rows": {
+                        "Row": [
+                            {
+                                "ColData": [
+                                    {"value": "Contra Asset"},
+                                    {"value": "(1,234.50)"},
+                                ]
+                            }
+                        ]
+                    },
+                    "Summary": {
+                        "ColData": [{"value": "Total Assets"}, {"value": "(1,234.50)"}]
+                    },
+                },
+                {
+                    "Header": {"ColData": [{"value": "Liabilities"}]},
+                    "Rows": {"Row": [{"ColData": [{"value": "Debt"}, {"value": "0.00"}]}]},
+                    "Summary": {"ColData": [{"value": "Total Liabilities"}, {"value": "0.00"}]},
+                },
+                {
+                    "Header": {"ColData": [{"value": "Equity"}]},
+                    "Rows": {"Row": [{"ColData": [{"value": "Equity"}, {"value": "0.00"}]}]},
+                    "Summary": {"ColData": [{"value": "Total Equity"}, {"value": "0.00"}]},
+                },
+            ]
+        }
+    }
+
+    rows = normalize_balance_sheet_rows(payload)
+
+    contra = next(row for row in rows if row.label == "Contra Asset")
+    assert contra.amount == Decimal("-1234.50")
+
+
+def test_normalize_balance_sheet_rows_rejects_account_row_before_header() -> None:
+    payload = {"Rows": {"Row": [{"ColData": [{"value": "Cash"}, {"value": "10.00"}]}]}}
+
+    with pytest.raises(ValueError, match="Account row 'Cash' appears before a section header"):
+        normalize_balance_sheet_rows(payload)
+
+
 def test_validate_balance_equation_balanced_with_totals() -> None:
     payload = json.loads(Path("tests/fixtures/qbo/balance_sheet_2025.json").read_text("utf-8"))
     rows = normalize_balance_sheet_rows(payload)
@@ -172,4 +219,68 @@ def test_validate_balance_equation_allows_tolerance_boundary() -> None:
 
     assert check.balanced is True
     assert check.difference == Decimal("0.01")
+    assert check.warning is None
+
+
+def test_validate_balance_equation_uses_account_sums_without_totals() -> None:
+    payload = {
+        "Rows": {
+            "Row": [
+                {
+                    "Header": {"ColData": [{"value": "Assets"}]},
+                    "Rows": {"Row": [{"ColData": [{"value": "Cash"}, {"value": "100.00"}]}]},
+                },
+                {
+                    "Header": {"ColData": [{"value": "Liabilities"}]},
+                    "Rows": {"Row": [{"ColData": [{"value": "Debt"}, {"value": "40.00"}]}]},
+                },
+                {
+                    "Header": {"ColData": [{"value": "Equity"}]},
+                    "Rows": {"Row": [{"ColData": [{"value": "Equity"}, {"value": "60.00"}]}]},
+                },
+            ]
+        }
+    }
+    rows = normalize_balance_sheet_rows(payload)
+
+    check = validate_balance_equation(rows)
+
+    assert check.balanced is True
+    assert check.assets == Decimal("100.00")
+    assert check.liabilities == Decimal("40.00")
+    assert check.equity == Decimal("60.00")
+    assert check.difference == Decimal("0.00")
+
+
+def test_validate_balance_equation_zero_totals_stays_balanced() -> None:
+    payload = {
+        "Rows": {
+            "Row": [
+                {
+                    "Header": {"ColData": [{"value": "Assets"}]},
+                    "Rows": {"Row": [{"ColData": [{"value": "Cash"}, {"value": "0.00"}]}]},
+                    "Summary": {"ColData": [{"value": "Total Assets"}, {"value": "0.00"}]},
+                },
+                {
+                    "Header": {"ColData": [{"value": "Liabilities"}]},
+                    "Rows": {"Row": [{"ColData": [{"value": "Debt"}, {"value": "0.00"}]}]},
+                    "Summary": {"ColData": [{"value": "Total Liabilities"}, {"value": "0.00"}]},
+                },
+                {
+                    "Header": {"ColData": [{"value": "Equity"}]},
+                    "Rows": {"Row": [{"ColData": [{"value": "Equity"}, {"value": "0.00"}]}]},
+                    "Summary": {"ColData": [{"value": "Total Equity"}, {"value": "0.00"}]},
+                },
+            ]
+        }
+    }
+    rows = normalize_balance_sheet_rows(payload)
+
+    check = validate_balance_equation(rows)
+
+    assert check.balanced is True
+    assert check.assets == Decimal("0.00")
+    assert check.liabilities == Decimal("0.00")
+    assert check.equity == Decimal("0.00")
+    assert check.difference == Decimal("0.00")
     assert check.warning is None

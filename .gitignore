@@ -23,6 +23,7 @@
 # ---------------------------------------------------------------------------
 *_CPA_Packet/
 *_CPA_Packet.zip
+exports/
 
 # ---------------------------------------------------------------------------
 # 3. Metadata Directory (raw API responses, logs, cache, fingerprints)
