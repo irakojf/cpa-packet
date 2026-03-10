@@ -33,6 +33,7 @@ from cpapacket.data.store import SessionDataStore
 from cpapacket.deliverables.base import DeliverableResult
 from cpapacket.deliverables.registry import get_ordered_registry
 from cpapacket.packet.manifest import DeliverableManifestEntry, write_packet_manifest
+from cpapacket.packet.review_dashboard import write_review_dashboard
 from cpapacket.packet.summary import PacketSummary, PacketSummaryDeliverable, write_packet_summary
 from cpapacket.packet.validator import (
     ValidationResult,
@@ -589,6 +590,14 @@ def register_build_command(cli_group: click.Group) -> None:
                 payroll_available=gusto_available,
             ),
         )
+        review_dashboard_paths: tuple[Path, Path] | None = None
+        try:
+            review_dashboard_paths = write_review_dashboard(
+                output_root=run_context.out_dir,
+                year=run_context.year,
+            )
+        except Exception as exc:
+            click.echo(f"WARNING: review_dashboard generation failed: {exc}")
 
         archive_path = create_packet_zip(
             packet_root=run_context.out_dir,
@@ -605,6 +614,9 @@ def register_build_command(cli_group: click.Group) -> None:
         click.echo("Build complete.")
         click.echo(f"Validation report: {validation_report_path}")
         click.echo(f"Packet summary: {summary_path}")
+        if review_dashboard_paths is not None:
+            click.echo(f"Review dashboard: {review_dashboard_paths[0]}")
+            click.echo(f"Review dashboard PDF: {review_dashboard_paths[1]}")
         click.echo(f"Packet manifest: {manifest_path}")
         click.echo(f"Archive: {archive_path}")
         click.echo(packet_tree_text)

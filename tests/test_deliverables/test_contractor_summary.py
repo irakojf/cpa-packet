@@ -17,8 +17,8 @@ from cpapacket.deliverables.contractor_summary import (
     _prompt_selected_accounts,
     build_contractor_records,
     detect_contractor_accounts,
-    sum_selected_account_balances,
     should_flag_for_1099_review,
+    sum_selected_account_balances,
 )
 from cpapacket.models.general_ledger import GeneralLedgerRow
 
@@ -47,6 +47,13 @@ class _ContractorProvider(_FakeProviders):
     def get_general_ledger(self, year: int, month: int) -> dict[str, Any]:
         self.gl_calls.append((year, month))
         return {"Rows": {"Row": self._monthly_rows.get(month, [])}}
+
+    def get_general_ledger_with_source(
+        self,
+        year: int,
+        month: int,
+    ) -> tuple[dict[str, Any], str]:
+        return self.get_general_ledger(year, month), "api"
 
     def get_company_info(self) -> dict[str, Any]:
         return {"CompanyInfo": {"CompanyName": "Acme LLC"}}
@@ -548,30 +555,26 @@ def test_contractor_summary_deliverable_generates_outputs_and_metadata(
     assert provider.calls == 1
     assert provider.gl_calls == [(2025, month) for month in range(1, 13)]
     assert result.warnings == []
-    assert any(path.endswith("contractor_summary_2025.csv") for path in result.artifacts)
+    assert any(path.endswith("Contractor_1099_Review_2025.csv") for path in result.artifacts)
     assert any(path.endswith("flagged_for_review_2025.csv") for path in result.artifacts)
-    assert any(path.endswith("contractor_summary_2025.pdf") for path in result.artifacts)
-    assert any(path.endswith("contractor_summary_2025.json") for path in result.artifacts)
+    assert any(path.endswith("Contractor_1099_Review_2025.pdf") for path in result.artifacts)
+    assert any(path.endswith("Contractor_1099_Review_2025.json") for path in result.artifacts)
     assert any(path.endswith("contractor_metadata.json") for path in result.artifacts)
 
     summary_csv_path = next(
-        Path(path)
-        for path in result.artifacts
-        if path.endswith("contractor_summary_2025.csv")
+        Path(path) for path in result.artifacts if path.endswith("Contractor_1099_Review_2025.csv")
     )
     with summary_csv_path.open(newline="", encoding="utf-8") as handle:
         summary_rows = list(csv.DictReader(handle))
     assert len(summary_rows) == 1
-    assert summary_rows[0]["display_name"] == "Alpha LLC"
+    assert summary_rows[0]["vendor_name"] == "Alpha LLC"
     assert summary_rows[0]["total_paid"] == "850.00"
     assert summary_rows[0]["card_processor_total"] == "150.00"
     assert summary_rows[0]["non_card_total"] == "700.00"
-    assert summary_rows[0]["requires_1099_review"] == "true"
+    assert summary_rows[0]["flagged_for_1099_review"] == "true"
 
     flagged_csv_path = next(
-        Path(path)
-        for path in result.artifacts
-        if path.endswith("flagged_for_review_2025.csv")
+        Path(path) for path in result.artifacts if path.endswith("flagged_for_review_2025.csv")
     )
     with flagged_csv_path.open(newline="", encoding="utf-8") as handle:
         flagged_rows = list(csv.DictReader(handle))
@@ -582,7 +585,7 @@ def test_contractor_summary_deliverable_generates_outputs_and_metadata(
     metadata_path = tmp_path / "_meta" / "contractor_metadata.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     assert metadata["deliverable"] == "contractor"
-    assert metadata["schema_versions"] == {"csv": "1.0"}
+    assert metadata["schema_versions"] == {"csv": "2.0"}
     assert metadata["inputs"]["selected_account_ids"] == ["acc-1"]
     assert "input_fingerprint" in metadata
 
@@ -612,9 +615,7 @@ def test_contractor_summary_deliverable_warns_when_no_accounts(
         "No contractor accounts detected; generated empty contractor summary."
     ]
     csv_path = next(
-        Path(path)
-        for path in result.artifacts
-        if path.endswith("contractor_summary_2025.csv")
+        Path(path) for path in result.artifacts if path.endswith("Contractor_1099_Review_2025.csv")
     )
     with csv_path.open(newline="", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
@@ -743,14 +744,10 @@ def test_contractor_summary_pipeline_flags_only_threshold_vendors(
     result = deliverable.generate(_ctx(tmp_path), provider, prompts={})
 
     summary_csv_path = next(
-        Path(path)
-        for path in result.artifacts
-        if path.endswith("contractor_summary_2025.csv")
+        Path(path) for path in result.artifacts if path.endswith("Contractor_1099_Review_2025.csv")
     )
     flagged_csv_path = next(
-        Path(path)
-        for path in result.artifacts
-        if path.endswith("flagged_for_review_2025.csv")
+        Path(path) for path in result.artifacts if path.endswith("flagged_for_review_2025.csv")
     )
     with summary_csv_path.open(newline="", encoding="utf-8") as handle:
         summary_rows = list(csv.DictReader(handle))
@@ -758,7 +755,7 @@ def test_contractor_summary_pipeline_flags_only_threshold_vendors(
         flagged_rows = list(csv.DictReader(handle))
 
     assert len(summary_rows) == 2
-    assert {row["display_name"] for row in summary_rows} == {"Alpha LLC", "Beta LLC"}
+    assert {row["vendor_name"] for row in summary_rows} == {"Alpha LLC", "Beta LLC"}
     assert len(flagged_rows) == 1
     assert flagged_rows[0]["display_name"] == "Alpha LLC"
 
@@ -819,14 +816,10 @@ def test_contractor_summary_csv_outputs_match_golden_files(
     result = deliverable.generate(_ctx(tmp_path), provider, prompts={})
 
     summary_csv = next(
-        Path(path)
-        for path in result.artifacts
-        if path.endswith("contractor_summary_2025.csv")
+        Path(path) for path in result.artifacts if path.endswith("Contractor_1099_Review_2025.csv")
     )
     flagged_csv = next(
-        Path(path)
-        for path in result.artifacts
-        if path.endswith("flagged_for_review_2025.csv")
+        Path(path) for path in result.artifacts if path.endswith("flagged_for_review_2025.csv")
     )
     fixtures_dir = Path("tests/fixtures/qbo")
     expected_summary = (fixtures_dir / "contractor_summary_2025_golden.csv").read_text(

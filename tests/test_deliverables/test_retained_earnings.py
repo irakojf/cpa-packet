@@ -24,10 +24,17 @@ class _Provider:
             "Rows": {
                 "Row": [
                     {
-                        "ColData": [
-                            {"value": "Retained Earnings"},
-                            {"value": value},
-                        ]
+                        "Header": {"ColData": [{"value": "Equity"}]},
+                        "Rows": {
+                            "Row": [
+                                {
+                                    "ColData": [
+                                        {"value": "Retained Earnings"},
+                                        {"value": value},
+                                    ]
+                                }
+                            ]
+                        },
                     }
                 ]
             }
@@ -70,6 +77,13 @@ class _Provider:
             rows = []
         return {"Rows": {"Row": rows}}
 
+    def get_general_ledger_with_source(
+        self,
+        year: int,
+        month: int,
+    ) -> tuple[dict[str, Any], str]:
+        return self.get_general_ledger(year, month), "api"
+
 
 def _ctx(tmp_path: Path, *, no_raw: bool = False) -> RunContext:
     return RunContext(
@@ -105,31 +119,39 @@ def test_retained_earnings_deliverable_generates_artifacts_and_metadata(
     assert provider.pnl_calls == [(2025, "accrual")]
     assert provider.gl_calls == [(2025, month) for month in range(1, 13)]
 
-    csv_path = next(Path(path) for path in result.artifacts if path.endswith(".csv"))
+    csv_path = next(
+        Path(path) for path in result.artifacts if path.endswith("Book_Equity_Rollforward_2025.csv")
+    )
+    tie_out_path = next(
+        Path(path) for path in result.artifacts if path.endswith("Equity_Tie_Out_to_QBO_2025.csv")
+    )
     data_path = next(Path(path) for path in result.artifacts if path.endswith("_data.json"))
     pdf_path = next(Path(path) for path in result.artifacts if path.endswith(".pdf"))
+    cpa_notes_path = next(Path(path) for path in result.artifacts if path.endswith("CPA_NOTES.md"))
     metadata_path = tmp_path / "_meta" / "retained_earnings_metadata.json"
 
     assert csv_path.exists()
+    assert tie_out_path.exists()
     assert data_path.exists()
     assert pdf_path.exists()
+    assert cpa_notes_path.exists()
     assert metadata_path.exists()
 
     with csv_path.open(newline="", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
     assert len(rows) == 1
     assert rows[0]["year"] == "2025"
-    assert rows[0]["status"] == "Balanced"
+    assert rows[0]["status"] == "Review"
     assert rows[0]["miscoded_distribution_count"] == "0"
 
     payload = json.loads(data_path.read_text(encoding="utf-8"))
     assert payload["year"] == 2025
-    assert payload["rollforward"]["expected_ending_re"] == "1100.00"
-    assert payload["rollforward"]["actual_ending_re"] == "1100.00"
+    assert payload["rollforward"]["expected_ending_book_equity_bucket_gl_basis"] == "1100.00"
+    assert payload["rollforward"]["actual_ending_book_equity_bucket"] == "1100.00"
 
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     assert metadata["deliverable"] == "retained_earnings"
-    assert metadata["schema_versions"] == {"csv": "1.0"}
+    assert metadata["schema_versions"] == {"csv": "2.0"}
     assert "input_fingerprint" in metadata
 
 

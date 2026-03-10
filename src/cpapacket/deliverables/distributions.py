@@ -17,10 +17,16 @@ from cpapacket.deliverables.general_ledger import (
     merge_general_ledger_monthly_slices,
 )
 from cpapacket.reconciliation.retained_earnings import (
+    extract_distribution_activity_rows,
+    extract_distribution_balance_from_balance_sheet,
     extract_distribution_total,
     integrate_miscoded_distributions,
 )
-from cpapacket.utils.constants import DELIVERABLE_FOLDERS, SCHEMA_VERSIONS
+from cpapacket.utils.constants import (
+    DELIVERABLE_FOLDERS,
+    RETAINED_EARNINGS_TOLERANCE,
+    SCHEMA_VERSIONS,
+)
 from cpapacket.utils.prompts import resolve_output_path
 from cpapacket.writers.csv_writer import CsvWriter
 from cpapacket.writers.pdf_writer import PdfBodyLine, PdfWriter
@@ -34,8 +40,18 @@ class DistributionsDataProvider(Protocol):
     def get_general_ledger(self, year: int, month: int) -> dict[str, Any]:
         """Fetch a monthly general-ledger payload."""
 
+    def get_general_ledger_with_source(
+        self,
+        year: int,
+        month: int,
+    ) -> tuple[dict[str, Any], str]:
+        """Fetch a monthly general-ledger payload plus source marker."""
+
     def get_company_info(self) -> dict[str, Any]:
         """Return QBO company info payload."""
+
+    def get_balance_sheet(self, year: int, as_of: str) -> dict[str, Any]:
+        """Return QBO balance sheet payload."""
 
 
 class DistributionsDeliverable:
@@ -44,7 +60,7 @@ class DistributionsDeliverable:
     key = "distributions"
     folder = DELIVERABLE_FOLDERS["distributions"]
     required = True
-    dependencies: list[str] = ["general_ledger"]
+    dependencies: list[str] = ["general_ledger", "balance_sheet", "prior_balance_sheet"]
     requires_gusto = False
 
     def gather_prompts(self, ctx: RunContext) -> dict[str, Any]:
@@ -68,7 +84,28 @@ class DistributionsDeliverable:
             provider=store,
         )
         gl_rows = list(merge_general_ledger_monthly_slices(monthly_slices))
+        activity_rows = extract_distribution_activity_rows(gl_rows)
         distribution_total = extract_distribution_total(gl_rows)
+        prior_year = ctx.year - 1
+        prior_balance_sheet = store.get_balance_sheet(prior_year, f"{prior_year}-12-31")
+        current_balance_sheet = store.get_balance_sheet(ctx.year, f"{ctx.year}-12-31")
+        prior_distribution_balance, _ = extract_distribution_balance_from_balance_sheet(
+            prior_balance_sheet
+        )
+        current_distribution_balance, _ = extract_distribution_balance_from_balance_sheet(
+            current_balance_sheet
+        )
+        balance_sheet_change = (
+            (current_distribution_balance - prior_distribution_balance)
+            .copy_abs()
+            .quantize(Decimal("0.01"))
+        )
+        bridge_difference = (distribution_total - balance_sheet_change).quantize(Decimal("0.01"))
+        bridge_status = (
+            "Balanced"
+            if bridge_difference.copy_abs() <= RETAINED_EARNINGS_TOLERANCE
+            else "Review"
+        )
         miscoded = integrate_miscoded_distributions(
             gl_rows=gl_rows,
             owner_keywords=owner_keywords,
@@ -82,6 +119,16 @@ class DistributionsDeliverable:
         dev_dir = ensure_directory(deliverable_dir / "dev")
 
         base_name = f"distributions_summary_{ctx.year}"
+        activity_csv_path = _resolve_output_path(
+            cpa_dir / f"distribution_activity_{ctx.year}.csv",
+            on_conflict=ctx.on_conflict,
+            non_interactive=ctx.non_interactive,
+        )
+        bridge_csv_path = _resolve_output_path(
+            cpa_dir / f"distribution_balance_bridge_{ctx.year}.csv",
+            on_conflict=ctx.on_conflict,
+            non_interactive=ctx.non_interactive,
+        )
         summary_csv_path = _resolve_output_path(
             cpa_dir / f"{base_name}.csv",
             on_conflict=ctx.on_conflict,
@@ -114,13 +161,28 @@ class DistributionsDeliverable:
             distribution_total=distribution_total,
             miscoded_candidate_count=candidate_count,
             owner_keywords=owner_keywords,
+            balance_sheet_change=balance_sheet_change,
+            bridge_status=bridge_status,
         )
         _write_summary_pdf(
             path=summary_pdf_path,
             year=ctx.year,
             distribution_total=distribution_total,
             miscoded_candidate_count=candidate_count,
+            balance_sheet_change=balance_sheet_change,
+            bridge_status=bridge_status,
             company_name=company_name,
+        )
+        _write_activity_csv(path=activity_csv_path, rows=activity_rows)
+        _write_balance_bridge_csv(
+            path=bridge_csv_path,
+            year=ctx.year,
+            prior_distribution_balance=prior_distribution_balance,
+            current_distribution_balance=current_distribution_balance,
+            balance_sheet_change=balance_sheet_change,
+            gl_distribution_total=distribution_total,
+            difference=bridge_difference,
+            status=bridge_status,
         )
         if summary_json_path is not None:
             _write_summary_json(
@@ -129,6 +191,8 @@ class DistributionsDeliverable:
                 distribution_total=distribution_total,
                 miscoded_candidate_count=candidate_count,
                 owner_keywords=owner_keywords,
+                balance_sheet_change=balance_sheet_change,
+                bridge_status=bridge_status,
             )
 
         warnings: list[str] = []
@@ -137,7 +201,13 @@ class DistributionsDeliverable:
                 "No owner keywords supplied; default owner/shareholder keywords were used."
             )
 
-        artifacts = [summary_csv_path, summary_pdf_path, miscoded.csv_path]
+        artifacts = [
+            summary_csv_path,
+            summary_pdf_path,
+            activity_csv_path,
+            bridge_csv_path,
+            miscoded.csv_path,
+        ]
         if summary_json_path is not None:
             artifacts.append(summary_json_path)
 
@@ -152,6 +222,7 @@ class DistributionsDeliverable:
                 "monthly_slice_count": len(monthly_slices),
                 "gl_row_count": len(gl_rows),
                 "distribution_total": f"{distribution_total:.2f}",
+                "distribution_balance_sheet_change": f"{balance_sheet_change:.2f}",
                 "miscoded_candidate_count": candidate_count,
                 "no_raw": ctx.no_raw,
             },
@@ -192,6 +263,8 @@ def _write_summary_csv(
     distribution_total: Decimal,
     miscoded_candidate_count: int,
     owner_keywords: list[str],
+    balance_sheet_change: Decimal,
+    bridge_status: str,
 ) -> None:
     writer = CsvWriter()
     writer.write_rows(
@@ -199,6 +272,8 @@ def _write_summary_csv(
         fieldnames=[
             "year",
             "distribution_total",
+            "distribution_balance_sheet_change",
+            "bridge_status",
             "miscoded_candidate_count",
             "owner_keywords",
         ],
@@ -206,6 +281,8 @@ def _write_summary_csv(
             {
                 "year": year,
                 "distribution_total": f"{distribution_total:.2f}",
+                "distribution_balance_sheet_change": f"{balance_sheet_change:.2f}",
+                "bridge_status": bridge_status,
                 "miscoded_candidate_count": miscoded_candidate_count,
                 "owner_keywords": "|".join(owner_keywords),
             }
@@ -220,10 +297,14 @@ def _write_summary_json(
     distribution_total: Decimal,
     miscoded_candidate_count: int,
     owner_keywords: list[str],
+    balance_sheet_change: Decimal,
+    bridge_status: str,
 ) -> None:
     payload = {
         "year": year,
         "distribution_total": f"{distribution_total:.2f}",
+        "distribution_balance_sheet_change": f"{balance_sheet_change:.2f}",
+        "bridge_status": bridge_status,
         "miscoded_candidate_count": miscoded_candidate_count,
         "owner_keywords": owner_keywords,
     }
@@ -239,6 +320,8 @@ def _write_summary_pdf(
     year: int,
     distribution_total: Decimal,
     miscoded_candidate_count: int,
+    balance_sheet_change: Decimal,
+    bridge_status: str,
     company_name: str = "Unknown Company",
 ) -> None:
     writer = PdfWriter()
@@ -249,7 +332,80 @@ def _write_summary_pdf(
         date_range_label=f"{year}-01-01 to {year}-12-31",
         body_lines=[
             PdfBodyLine(text=f"Distribution Total: {distribution_total:.2f}", row_type="total"),
+            PdfBodyLine(text=f"Balance-Sheet Change: {balance_sheet_change:.2f}"),
+            PdfBodyLine(text=f"Bridge Status: {bridge_status}"),
             PdfBodyLine(text=f"Likely Miscoded Count: {miscoded_candidate_count}"),
+        ],
+    )
+
+
+def _write_activity_csv(*, path: Path, rows: list[Any]) -> None:
+    writer = CsvWriter()
+    writer.write_rows(
+        path,
+        fieldnames=[
+            "date",
+            "txn_type",
+            "doc_num",
+            "payee",
+            "account_name",
+            "memo",
+            "debit",
+            "credit",
+            "signed_amount",
+            "classification",
+        ],
+        rows=[
+            {
+                "date": row.date.isoformat(),
+                "txn_type": row.txn_type,
+                "doc_num": row.doc_num,
+                "payee": row.payee,
+                "account_name": row.account_name,
+                "memo": row.memo,
+                "debit": f"{row.debit:.2f}",
+                "credit": f"{row.credit:.2f}",
+                "signed_amount": f"{row.signed_amount:.2f}",
+                "classification": row.classification,
+            }
+            for row in rows
+        ],
+    )
+
+
+def _write_balance_bridge_csv(
+    *,
+    path: Path,
+    year: int,
+    prior_distribution_balance: Decimal,
+    current_distribution_balance: Decimal,
+    balance_sheet_change: Decimal,
+    gl_distribution_total: Decimal,
+    difference: Decimal,
+    status: str,
+) -> None:
+    writer = CsvWriter()
+    writer.write_rows(
+        path,
+        fieldnames=[
+            "year",
+            "prior_distribution_balance",
+            "current_distribution_balance",
+            "balance_sheet_change",
+            "gl_distribution_total",
+            "difference",
+            "status",
+        ],
+        rows=[
+            {
+                "year": year,
+                "prior_distribution_balance": f"{prior_distribution_balance:.2f}",
+                "current_distribution_balance": f"{current_distribution_balance:.2f}",
+                "balance_sheet_change": f"{balance_sheet_change:.2f}",
+                "gl_distribution_total": f"{gl_distribution_total:.2f}",
+                "difference": f"{difference:.2f}",
+                "status": status,
+            }
         ],
     )
 

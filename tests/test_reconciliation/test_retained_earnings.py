@@ -8,9 +8,11 @@ from typing import Any
 from cpapacket.models.distributions import MiscodedDistributionCandidate
 from cpapacket.models.general_ledger import GeneralLedgerRow
 from cpapacket.reconciliation.retained_earnings import (
+    DistributionBalanceBridge,
     RetainedEarningsSourceData,
     build_retained_earnings_rollforward,
     evaluate_re_structural_flags,
+    extract_distribution_balance_from_balance_sheet,
     extract_distribution_total,
     extract_net_income_from_pnl_report,
     extract_retained_earnings_from_balance_sheet,
@@ -123,21 +125,27 @@ def test_evaluate_re_structural_flags_all_conditions() -> None:
 
     flags = evaluate_re_structural_flags(
         net_income=Decimal("100"),
-        distributions=Decimal("150"),
-        actual_ending_re=Decimal("-1"),
+        distributions_gl=Decimal("150"),
+        distributions_bs_change=Decimal("175"),
+        actual_ending_book_equity_bucket=Decimal("-1"),
+        shareholder_receivable_ending_balance=Decimal("25"),
         gl_rows=gl_rows,
     )
 
-    assert "basis_risk_distributions_exceed_net_income" in flags
-    assert "negative_ending_retained_earnings" in flags
+    assert "distributions_gl_vs_bs_mismatch" in flags
+    assert "distributions_exceed_current_year_income" in flags
+    assert "negative_ending_book_equity" in flags
+    assert "shareholder_receivable_present" in flags
     assert "direct_retained_earnings_postings_detected" in flags
 
 
 def test_evaluate_re_structural_flags_clean_case() -> None:
     flags = evaluate_re_structural_flags(
         net_income=Decimal("150"),
-        distributions=Decimal("100"),
-        actual_ending_re=Decimal("200"),
+        distributions_gl=Decimal("100"),
+        distributions_bs_change=Decimal("100"),
+        actual_ending_book_equity_bucket=Decimal("200"),
+        shareholder_receivable_ending_balance=Decimal("0"),
         gl_rows=[_gl_row()],
     )
 
@@ -280,6 +288,25 @@ def test_extract_distribution_total_excludes_non_distribution_equity_accounts() 
     assert extract_distribution_total(rows) == Decimal("0.00")
 
 
+def test_extract_distribution_total_excludes_shareholder_contributions() -> None:
+    rows = [
+        GeneralLedgerRow(
+            txn_id="EQ-3",
+            date=date(2025, 6, 3),
+            transaction_type="Journal",
+            document_number="EQ-3",
+            account_name="Shareholders' equity:Contributions",
+            account_type="Equity",
+            payee=None,
+            memo="owner capital injection",
+            debit=Decimal("12000"),
+            credit=Decimal("0"),
+        )
+    ]
+
+    assert extract_distribution_total(rows) == Decimal("0.00")
+
+
 def test_extract_net_income_from_pnl_report_handles_income_and_loss() -> None:
     income_payload: dict[str, object] = {
         "Rows": {
@@ -349,25 +376,123 @@ def test_extract_retained_earnings_from_balance_sheet_payload() -> None:
     assert extract_retained_earnings_from_balance_sheet(payload) == Decimal("5432.10")
 
 
+def test_extract_retained_earnings_from_balance_sheet_includes_net_income_only() -> None:
+    payload: dict[str, object] = {
+        "Rows": {
+            "Row": [
+                {
+                    "Header": {"ColData": [{"value": "Equity"}]},
+                    "Rows": {
+                        "Row": [
+                            {
+                                "ColData": [
+                                    {"value": "Retained Earnings"},
+                                    {"value": "100.00"},
+                                ],
+                                "type": "Data",
+                            },
+                            {
+                                "Header": {
+                                    "ColData": [
+                                        {"value": "Shareholders' equity"},
+                                        {"value": ""},
+                                    ]
+                                },
+                                "Rows": {
+                                    "Row": [
+                                        {
+                                            "ColData": [
+                                                {"value": "Distributions"},
+                                                {"value": "-25.00"},
+                                            ],
+                                            "type": "Data",
+                                        },
+                                        {
+                                            "ColData": [
+                                                {"value": "Contributions"},
+                                                {"value": "12.00"},
+                                            ],
+                                            "type": "Data",
+                                        },
+                                    ]
+                                },
+                                "type": "Section",
+                            },
+                            {
+                                "ColData": [
+                                    {"value": "Net Income"},
+                                    {"value": "250.00"},
+                                ],
+                                "type": "Data",
+                            },
+                        ]
+                    },
+                }
+            ]
+        }
+    }
+
+    assert extract_retained_earnings_from_balance_sheet(payload) == Decimal("350.00")
+
+
 def test_extract_retained_earnings_from_balance_sheet_defaults_zero() -> None:
     assert extract_retained_earnings_from_balance_sheet({}) == Decimal("0.00")
-    assert (
-        extract_retained_earnings_from_balance_sheet(
-            {
-                "Rows": {
-                    "Row": [
-                        {
-                            "ColData": [
-                                {"value": "Common Stock"},
-                                {"value": "100.00"},
+    assert extract_retained_earnings_from_balance_sheet(
+        {
+            "Rows": {
+                "Row": [
+                    {
+                        "Header": {"ColData": [{"value": "Equity"}]},
+                        "Rows": {
+                            "Row": [
+                                {
+                                    "ColData": [
+                                        {"value": "Common Stock"},
+                                        {"value": "100.00"},
+                                    ]
+                                }
                             ]
-                        }
-                    ]
-                }
+                        },
+                    }
+                ]
             }
-        )
-        == Decimal("0.00")
-    )
+        }
+    ) == Decimal("0.00")
+
+
+def test_extract_distribution_balance_from_balance_sheet_payload() -> None:
+    payload: dict[str, object] = {
+        "Rows": {
+            "Row": [
+                {
+                    "Header": {"ColData": [{"value": "Equity"}]},
+                    "Rows": {
+                        "Row": [
+                            {
+                                "ColData": [
+                                    {"value": "Distributions"},
+                                    {"value": "-25.00"},
+                                ],
+                                "type": "Data",
+                            },
+                            {
+                                "ColData": [
+                                    {"value": "Contributions"},
+                                    {"value": "12.00"},
+                                ],
+                                "type": "Data",
+                            },
+                        ]
+                    },
+                }
+            ]
+        }
+    }
+
+    balance, found = extract_distribution_balance_from_balance_sheet(payload)
+
+    assert balance == Decimal("-25.00")
+    assert found is True
 
 
 class _ReProvider:
@@ -384,10 +509,17 @@ class _ReProvider:
             "Rows": {
                 "Row": [
                     {
-                        "ColData": [
-                            {"value": "Retained Earnings"},
-                            {"value": value},
-                        ]
+                        "Header": {"ColData": [{"value": "Equity"}]},
+                        "Rows": {
+                            "Row": [
+                                {
+                                    "ColData": [
+                                        {"value": "Retained Earnings"},
+                                        {"value": value},
+                                    ]
+                                }
+                            ]
+                        },
                     }
                 ]
             }
@@ -430,16 +562,24 @@ class _ReProvider:
             rows = []
         return {"Rows": {"Row": rows}}
 
+    def get_general_ledger_with_source(
+        self,
+        year: int,
+        month: int,
+    ) -> tuple[dict[str, Any], str]:
+        return self.get_general_ledger(year, month), "api"
+
 
 def test_load_re_source_data_uses_provider_layer_and_calculates_fields() -> None:
     provider = _ReProvider()
 
     data = load_re_source_data(year=2025, provider=provider)
 
-    assert data.beginning_retained_earnings == Decimal("100.00")
+    assert data.beginning_book_equity_bucket == Decimal("100.00")
     assert data.net_income == Decimal("250.00")
-    assert data.distributions == Decimal("125.00")
-    assert data.actual_ending_retained_earnings == Decimal("500.00")
+    assert data.distributions_gl == Decimal("125.00")
+    assert data.distributions_bs_change == Decimal("0.00")
+    assert data.actual_ending_book_equity_bucket == Decimal("500.00")
     assert len(data.gl_rows) == 1
     assert provider.balance_sheet_calls == [
         (2024, "2024-12-31"),
@@ -449,40 +589,157 @@ def test_load_re_source_data_uses_provider_layer_and_calculates_fields() -> None
     assert provider.gl_calls == [(2025, month) for month in range(1, 13)]
 
 
+class _ReProviderWithBalanceSheetDistributions(_ReProvider):
+    def get_balance_sheet(self, year: int, as_of: date | str) -> dict[str, Any]:
+        as_of_text = as_of.isoformat() if isinstance(as_of, date) else as_of
+        self.balance_sheet_calls.append((year, as_of_text))
+        if year == 2024:
+            retained_earnings = "100.00"
+            distributions = "-25.00"
+            net_income = "50.00"
+        else:
+            retained_earnings = "100.00"
+            distributions = "-100.00"
+            net_income = "25.00"
+        return {
+            "Rows": {
+                "Row": [
+                    {
+                        "Header": {"ColData": [{"value": "Equity"}]},
+                        "Rows": {
+                            "Row": [
+                                {
+                                    "ColData": [
+                                        {"value": "Retained Earnings"},
+                                        {"value": retained_earnings},
+                                    ],
+                                    "type": "Data",
+                                },
+                                {
+                                    "Header": {
+                                        "ColData": [
+                                            {"value": "Shareholders' equity"},
+                                            {"value": ""},
+                                        ]
+                                    },
+                                    "Rows": {
+                                        "Row": [
+                                            {
+                                                "ColData": [
+                                                    {"value": "Distributions"},
+                                                    {"value": distributions},
+                                                ],
+                                                "type": "Data",
+                                            }
+                                        ]
+                                    },
+                                    "type": "Section",
+                                },
+                                {
+                                    "ColData": [
+                                        {"value": "Net Income"},
+                                        {"value": net_income},
+                                    ],
+                                    "type": "Data",
+                                },
+                            ]
+                        },
+                    }
+                ]
+            }
+        }
+
+    def get_pnl(self, year: int, method: str) -> dict[str, Any]:
+        self.pnl_calls.append((year, method))
+        return {
+            "Rows": {
+                "Row": [
+                    {
+                        "Summary": {
+                            "ColData": [
+                                {"value": "Net Income"},
+                                {"value": "25.00"},
+                            ]
+                        }
+                    }
+                ]
+            }
+        }
+
+
+def test_load_re_source_data_prefers_balance_sheet_distribution_delta() -> None:
+    provider = _ReProviderWithBalanceSheetDistributions()
+
+    data = load_re_source_data(year=2025, provider=provider)
+
+    assert data.beginning_book_equity_bucket == Decimal("150.00")
+    assert data.net_income == Decimal("25.00")
+    assert data.distributions_gl == Decimal("125.00")
+    assert data.distributions_bs_change == Decimal("75.00")
+    assert data.actual_ending_book_equity_bucket == Decimal("125.00")
+
+
 def _sample_source_data(
     *,
     beginning: Decimal = Decimal("100.00"),
     net_income: Decimal = Decimal("50.00"),
-    distributions: Decimal = Decimal("10.00"),
-    actual: Decimal = Decimal("139.99"),
+    distributions_gl: Decimal = Decimal("10.00"),
+    distributions_bs_change: Decimal = Decimal("10.00"),
+    contributions: Decimal = Decimal("0.00"),
+    direct_equity: Decimal = Decimal("0.00"),
+    actual: Decimal = Decimal("140.00"),
 ) -> RetainedEarningsSourceData:
     return RetainedEarningsSourceData(
-        beginning_retained_earnings=beginning,
+        beginning_book_equity_bucket=beginning,
         net_income=net_income,
-        distributions=distributions,
-        actual_ending_retained_earnings=actual,
+        distributions_gl=distributions_gl,
+        distributions_bs_change=distributions_bs_change,
+        contributions=contributions,
+        other_direct_equity_postings=direct_equity,
+        actual_ending_book_equity_bucket=actual,
+        shareholder_receivable_ending_balance=Decimal("0.00"),
         gl_rows=[],
+        equity_tie_out_rows=[],
+        distribution_activity_rows=[],
+        shareholder_receivable_rows=[],
+        direct_equity_rows=[],
+        distribution_bridge_detail_rows=[],
+        distribution_balance_bridge=DistributionBalanceBridge(
+            prior_distribution_balance=Decimal("0.00"),
+            current_distribution_balance=Decimal("0.00"),
+            distribution_total_gl=distributions_gl,
+            distribution_total_bs_change=distributions_bs_change,
+            difference=(distributions_gl - distributions_bs_change).quantize(Decimal("0.01")),
+            status="Balanced",
+        ),
     )
 
 
 def test_build_retained_earnings_rollforward_balanced_status() -> None:
-    source = _sample_source_data(actual=Decimal("139.99"))
+    source = _sample_source_data(actual=Decimal("140.00"))
     result = build_retained_earnings_rollforward(
         source=source,
-        structural_flags=["basis_risk_distributions_exceed_net_income"],
+        structural_flags=["distributions_exceed_current_year_income"],
     )
 
-    assert result.expected_ending_re == Decimal("140.00")
-    assert result.difference == Decimal("0.01")
+    assert result.expected_ending_book_equity_bucket_gl_basis == Decimal("140.00")
+    assert result.expected_ending_book_equity_bucket_bs_basis == Decimal("140.00")
+    assert result.gl_basis_difference == Decimal("0.00")
+    assert result.bs_basis_difference == Decimal("0.00")
     assert result.status == "Balanced"
-    assert result.flags == ["basis_risk_distributions_exceed_net_income"]
+    assert result.flags == ["distributions_exceed_current_year_income"]
 
 
 def test_build_retained_earnings_rollforward_mismatch_status() -> None:
-    source = _sample_source_data(actual=Decimal("140.10"))
+    source = _sample_source_data(
+        distributions_bs_change=Decimal("12.00"),
+        actual=Decimal("140.10"),
+    )
     result = build_retained_earnings_rollforward(source=source, structural_flags=[])
 
-    assert result.expected_ending_re == Decimal("140.00")
-    assert result.difference == Decimal("-0.10")
-    assert result.status == "Mismatch"
+    assert result.expected_ending_book_equity_bucket_gl_basis == Decimal("140.00")
+    assert result.expected_ending_book_equity_bucket_bs_basis == Decimal("138.00")
+    assert result.gl_basis_difference == Decimal("-0.10")
+    assert result.bs_basis_difference == Decimal("-2.10")
+    assert result.status == "Review"
     assert result.flags == []

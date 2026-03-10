@@ -25,6 +25,20 @@ class _Provider:
         self.calls.append((year, month))
         return {"Rows": {"Row": self._months.get(month, [])}}
 
+    def get_general_ledger_with_source(
+        self,
+        year: int,
+        month: int,
+    ) -> tuple[dict[str, Any], str]:
+        return self.get_general_ledger(year, month), "api"
+
+    def get_company_info(self) -> dict[str, Any]:
+        return {"CompanyInfo": {"LegalName": "Ira Ko LLC"}}
+
+    def get_balance_sheet(self, year: int, as_of: str) -> dict[str, Any]:
+        del year, as_of
+        return {"Rows": {"Row": []}}
+
 
 class _HttpQboClient:
     def __init__(self, client: httpx.Client) -> None:
@@ -96,17 +110,27 @@ def test_distributions_deliverable_generates_summary_and_metadata(
     result = deliverable.generate(_ctx(tmp_path, owner_keywords=["owner"]), provider, prompts={})
 
     assert result.success is True
-    assert len(result.artifacts) == 4
+    assert len(result.artifacts) == 6
     assert provider.calls == [(2025, month) for month in range(1, 13)]
 
     summary_csv = Path(result.artifacts[0])
     summary_pdf = Path(result.artifacts[1])
     miscoded_csv = Path(result.artifacts[2])
-    summary_json = Path(result.artifacts[3])
+    activity_csv = next(
+        Path(path) for path in result.artifacts if path.endswith("distribution_activity_2025.csv")
+    )
+    bridge_csv = next(
+        Path(path)
+        for path in result.artifacts
+        if path.endswith("distribution_balance_bridge_2025.csv")
+    )
+    summary_json = Path(result.artifacts[-1])
     metadata_path = tmp_path / "_meta" / "distributions_metadata.json"
 
     assert summary_csv.exists()
     assert summary_pdf.exists()
+    assert activity_csv.exists()
+    assert bridge_csv.exists()
     assert miscoded_csv.exists()
     assert summary_json.exists()
     assert metadata_path.exists()
@@ -115,15 +139,18 @@ def test_distributions_deliverable_generates_summary_and_metadata(
         rows = list(csv.DictReader(handle))
     assert len(rows) == 1
     assert rows[0]["distribution_total"] == "1200.00"
+    assert rows[0]["distribution_balance_sheet_change"] == "0.00"
+    assert rows[0]["bridge_status"] == "Review"
     assert rows[0]["owner_keywords"] == "owner"
 
     summary_payload = json.loads(summary_json.read_text(encoding="utf-8"))
     assert summary_payload["distribution_total"] == "1200.00"
+    assert summary_payload["distribution_balance_sheet_change"] == "0.00"
     assert summary_payload["owner_keywords"] == ["owner"]
 
     metadata_payload = json.loads(metadata_path.read_text(encoding="utf-8"))
     assert metadata_payload["deliverable"] == "distributions"
-    assert metadata_payload["schema_versions"] == {"csv": "1.0"}
+    assert metadata_payload["schema_versions"] == {"csv": "2.0"}
     assert metadata_payload["artifacts"]
     assert "input_fingerprint" in metadata_payload
 
@@ -166,7 +193,9 @@ def test_distributions_deliverable_falls_back_to_default_owner_keywords(
     assert result.success is True
     assert any("default owner/shareholder keywords" in warning for warning in result.warnings)
 
-    summary_json = tmp_path / "06_Shareholder_Distributions" / "dev" / "distributions_summary_2025.json"
+    summary_json = (
+        tmp_path / "06_Shareholder_Distributions" / "dev" / "distributions_summary_2025.json"
+    )
     payload = json.loads(summary_json.read_text(encoding="utf-8"))
     assert payload["owner_keywords"] == ["owner", "shareholder"]
     assert Decimal(payload["distribution_total"]) == Decimal("0.00")
@@ -318,6 +347,12 @@ def test_distributions_deliverable_pipeline_via_respx_and_datastore(
             payload = {"Rows": {"Row": []}}
         return httpx.Response(200, json=payload)
 
+    def company_info_response(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"CompanyInfo": {"LegalName": "Ira Ko LLC"}})
+
+    def balance_sheet_response(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"Rows": {"Row": []}})
+
     store = SessionDataStore(cache_dir=tmp_path / "_meta" / "private" / "cache")
     with httpx.Client(base_url="https://qbo.api.test") as http_client:
         providers = DataProviders(
@@ -331,10 +366,18 @@ def test_distributions_deliverable_pipeline_via_respx_and_datastore(
             route = router.get("https://qbo.api.test/reports/GeneralLedger").mock(
                 side_effect=general_ledger_response
             )
+            company_route = router.get("https://qbo.api.test/companyinfo/test-realm").mock(
+                side_effect=company_info_response
+            )
+            balance_sheet_route = router.get("https://qbo.api.test/reports/BalanceSheet").mock(
+                side_effect=balance_sheet_response
+            )
             result = deliverable.generate(_ctx(tmp_path, owner_keywords=["alex"]), providers, {})
 
     assert result.success
     assert route.call_count == 12
+    assert company_route.call_count == 1
+    assert balance_sheet_route.call_count == 2
 
     summary_csv = next(
         Path(path) for path in result.artifacts if path.endswith("distributions_summary_2025.csv")

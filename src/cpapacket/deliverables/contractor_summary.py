@@ -7,7 +7,7 @@ import json
 from collections.abc import Callable, Mapping, Sequence
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
-from typing import Any, Protocol, TypedDict, cast
+from typing import Any, Literal, Protocol, TypedDict, cast
 
 from cpapacket.core.context import RunContext
 from cpapacket.core.filesystem import ensure_directory
@@ -59,6 +59,13 @@ class ContractorDataProvider(_AccountProviders, Protocol):
 
     def get_general_ledger(self, year: int, month: int) -> dict[str, Any]:
         """Return one month of general-ledger report payload."""
+
+    def get_general_ledger_with_source(
+        self,
+        year: int,
+        month: int,
+    ) -> tuple[dict[str, Any], str]:
+        """Return one month of general-ledger payload and its source marker."""
 
     def get_company_info(self) -> dict[str, Any]:
         """Return QBO company info payload."""
@@ -254,9 +261,7 @@ def build_contractor_records(
         if total_paid == _ZERO:
             continue
 
-        card_total_raw = bucket["card_processor_total_raw"].quantize(
-            _CENT, rounding=ROUND_HALF_UP
-        )
+        card_total_raw = bucket["card_processor_total_raw"].quantize(_CENT, rounding=ROUND_HALF_UP)
         card_total_candidate = card_total_raw if total_paid_raw >= _ZERO else -card_total_raw
         card_total = min(max(card_total_candidate, _ZERO), total_paid).quantize(
             _CENT,
@@ -302,7 +307,7 @@ def write_contractor_output_artifacts(
     cpa_dir = ensure_directory(deliverable_dir / "cpa")
     dev_dir = ensure_directory(deliverable_dir / "dev")
 
-    base_name = f"contractor_summary_{ctx.year}"
+    base_name = f"Contractor_1099_Review_{ctx.year}"
     csv_path = _resolve_output_path(
         cpa_dir / f"{base_name}.csv",
         on_conflict=ctx.on_conflict,
@@ -333,9 +338,14 @@ def write_contractor_output_artifacts(
         non_interactive=ctx.non_interactive,
     )
 
-    _write_contractor_csv(path=csv_path, records=records)
+    _write_contractor_csv(path=csv_path, records=records, selected_accounts=selected_accounts)
     _write_flagged_review_csv(path=flagged_csv_path, records=records)
-    _write_contractor_pdf(path=pdf_path, year=ctx.year, records=records, company_name=company_name)
+    _write_contractor_pdf(
+        path=pdf_path,
+        year=ctx.year,
+        records=records,
+        company_name=company_name,
+    )
     raw_json_path = (
         None
         if json_path is None
@@ -383,27 +393,41 @@ def write_contractor_output_artifacts(
     return [str(path) for path in artifacts] + [str(metadata_path)]
 
 
-def _write_contractor_csv(*, path: Path, records: Sequence[ContractorRecord]) -> None:
+def _write_contractor_csv(
+    *,
+    path: Path,
+    records: Sequence[ContractorRecord],
+    selected_accounts: Sequence[dict[str, str]],
+) -> None:
+    selected_source_accounts = "|".join(account["name"] for account in selected_accounts)
     CsvWriter().write_rows(
         path,
         fieldnames=[
             "vendor_id",
-            "display_name",
+            "vendor_name",
             "tax_id_on_file",
             "total_paid",
             "card_processor_total",
             "non_card_total",
+            "selected_source_accounts",
+            "threshold",
+            "flagged_for_1099_review",
+            "review_note",
             "requires_1099_review",
             "flags",
         ],
         rows=[
             {
                 "vendor_id": record.vendor_id,
-                "display_name": record.display_name,
+                "vendor_name": record.display_name,
                 "tax_id_on_file": str(record.tax_id_on_file).lower(),
                 "total_paid": format(record.total_paid, "f"),
                 "card_processor_total": format(record.card_processor_total, "f"),
                 "non_card_total": format(record.non_card_total, "f"),
+                "selected_source_accounts": selected_source_accounts,
+                "threshold": format(CONTRACTOR_1099_THRESHOLD, "f"),
+                "flagged_for_1099_review": str(record.requires_1099_review).lower(),
+                "review_note": _review_note(record),
                 "requires_1099_review": str(record.requires_1099_review).lower(),
                 "flags": "|".join(record.flags),
             }
@@ -443,7 +467,13 @@ def _fmt_money(value: Decimal) -> str:
     return f"${value:,.2f}"
 
 
-def _write_contractor_pdf(*, path: Path, year: int, records: Sequence[ContractorRecord], company_name: str = "Unknown Company") -> None:
+def _write_contractor_pdf(
+    *,
+    path: Path,
+    year: int,
+    records: Sequence[ContractorRecord],
+    company_name: str = "Unknown Company",
+) -> None:
     vendor_count = len(records)
     flagged_count = sum(1 for record in records if record.requires_1099_review)
     total_paid = sum((record.total_paid for record in records), _ZERO).quantize(
@@ -460,6 +490,15 @@ def _write_contractor_pdf(*, path: Path, year: int, records: Sequence[Contractor
         title="Summary",
         headers=("", ""),
         rows=[
+            PdfTableRow(
+                cells=(
+                    "Methodology",
+                    (
+                        "This is a QBO-account-based 1099 review schedule, "
+                        "not a final filing determination."
+                    ),
+                )
+            ),
             PdfTableRow(cells=("Total Vendors", str(vendor_count))),
             PdfTableRow(cells=("Total Paid", _fmt_money(total_paid))),
             PdfTableRow(cells=("Card Processor Payments", _fmt_money(total_card))),
@@ -471,7 +510,7 @@ def _write_contractor_pdf(*, path: Path, year: int, records: Sequence[Contractor
     sorted_records = sorted(records, key=lambda r: r.display_name.lower())
     detail_rows: list[PdfTableRow] = []
     for record in sorted_records:
-        status: str | None = "mismatch" if record.requires_1099_review else None
+        status: Literal["mismatch"] | None = "mismatch" if record.requires_1099_review else None
         detail_rows.append(
             PdfTableRow(
                 cells=(
@@ -499,10 +538,18 @@ def _write_contractor_pdf(*, path: Path, year: int, records: Sequence[Contractor
     PdfWriter().write_reconciliation_report(
         path,
         company_name=company_name,
-        report_title="Contractor 1099 Summary",
+        report_title="Contractor 1099 Review",
         date_range_label=f"{year}-01-01 to {year}-12-31",
         sections=[summary_section, detail_section],
     )
+
+
+def _review_note(record: ContractorRecord) -> str:
+    if record.requires_1099_review:
+        return "Meets non-card threshold; CPA review required."
+    if record.non_card_total == _ZERO:
+        return "Card-only or fully processor-paid activity."
+    return "Below review threshold based on detected non-card activity."
 
 
 def _build_raw_payload(
@@ -690,10 +737,7 @@ def _account_matches(account_name: str, selected_names: set[str]) -> bool:
     """
     if account_name in selected_names:
         return True
-    for name in selected_names:
-        if account_name.endswith(":" + name):
-            return True
-    return False
+    return any(account_name.endswith(":" + name) for name in selected_names)
 
 
 def _is_contractor_account_type(account_type: str) -> bool:
@@ -728,11 +772,8 @@ def _is_card_payment_row(row: GeneralLedgerRow) -> bool:
 
 def _resolve_output_path(path: Path, *, on_conflict: str, non_interactive: bool) -> Path:
     normalized_conflict = None if on_conflict == "prompt" else on_conflict
-    return cast(
-        Path,
-        resolve_output_path(
-            path,
-            on_conflict=normalized_conflict,
-            non_interactive=non_interactive,
-        ),
+    return resolve_output_path(
+        path,
+        on_conflict=normalized_conflict,
+        non_interactive=non_interactive,
     )

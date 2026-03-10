@@ -1,4 +1,4 @@
-"""Retained earnings rollforward domain model."""
+"""Book-equity rollforward domain model."""
 
 from __future__ import annotations
 
@@ -11,26 +11,36 @@ _TWO_PLACES = Decimal("0.01")
 
 
 class RetainedEarningsRollforward(BaseModel):
-    """Canonical retained-earnings rollforward values for packet reporting."""
+    """Canonical book-equity rollforward values for packet reporting."""
 
     model_config = ConfigDict(frozen=True)
 
-    beginning_re: Decimal
-    net_income: Decimal
-    distributions: Decimal
-    expected_ending_re: Decimal
-    actual_ending_re: Decimal
-    difference: Decimal
-    status: Literal["Balanced", "Mismatch"]
+    beginning_book_equity_bucket: Decimal
+    current_year_net_income: Decimal
+    current_year_distributions_gl: Decimal
+    current_year_distributions_bs_change: Decimal
+    current_year_contributions: Decimal
+    other_direct_equity_postings: Decimal
+    expected_ending_book_equity_bucket_gl_basis: Decimal
+    expected_ending_book_equity_bucket_bs_basis: Decimal
+    actual_ending_book_equity_bucket: Decimal
+    gl_basis_difference: Decimal
+    bs_basis_difference: Decimal
+    status: Literal["Balanced", "Review"]
     flags: list[str]
 
     @field_validator(
-        "beginning_re",
-        "net_income",
-        "distributions",
-        "expected_ending_re",
-        "actual_ending_re",
-        "difference",
+        "beginning_book_equity_bucket",
+        "current_year_net_income",
+        "current_year_distributions_gl",
+        "current_year_distributions_bs_change",
+        "current_year_contributions",
+        "other_direct_equity_postings",
+        "expected_ending_book_equity_bucket_gl_basis",
+        "expected_ending_book_equity_bucket_bs_basis",
+        "actual_ending_book_equity_bucket",
+        "gl_basis_difference",
+        "bs_basis_difference",
         mode="before",
     )
     @classmethod

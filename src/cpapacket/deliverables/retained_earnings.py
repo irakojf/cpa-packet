@@ -1,4 +1,4 @@
-"""Retained earnings rollforward deliverable orchestration."""
+"""Retained earnings deliverable orchestration for CPA-facing equity review."""
 
 from __future__ import annotations
 
@@ -20,6 +20,11 @@ from cpapacket.reconciliation.retained_earnings import (
 from cpapacket.utils.constants import DELIVERABLE_FOLDERS, SCHEMA_VERSIONS
 from cpapacket.utils.prompts import resolve_output_path
 from cpapacket.writers.retained_earnings import (
+    write_cpa_notes,
+    write_distribution_bridge_csv,
+    write_distribution_bridge_detail_csv,
+    write_equity_activity_csv,
+    write_equity_tie_out_csv,
     write_rollforward_csv,
     write_rollforward_data_json,
     write_rollforward_pdf,
@@ -27,7 +32,7 @@ from cpapacket.writers.retained_earnings import (
 
 
 class RetainedEarningsDeliverable:
-    """Generate retained earnings rollforward artifacts from cross-deliverable data."""
+    """Generate CPA-facing equity review artifacts from cross-deliverable data."""
 
     key = "retained_earnings"
     folder = DELIVERABLE_FOLDERS["retained_earnings"]
@@ -53,8 +58,10 @@ class RetainedEarningsDeliverable:
         source = load_re_source_data(year=ctx.year, provider=store)
         structural_flags = evaluate_re_structural_flags(
             net_income=source.net_income,
-            distributions=source.distributions,
-            actual_ending_re=source.actual_ending_retained_earnings,
+            distributions_gl=source.distributions_gl,
+            distributions_bs_change=source.distributions_bs_change,
+            actual_ending_book_equity_bucket=source.actual_ending_book_equity_bucket,
+            shareholder_receivable_ending_balance=source.shareholder_receivable_ending_balance,
             gl_rows=source.gl_rows,
         )
         rollforward = build_retained_earnings_rollforward(
@@ -74,15 +81,44 @@ class RetainedEarningsDeliverable:
         meta_dir = ensure_directory(ctx.out_dir / "_meta")
         cpa_dir = ensure_directory(deliverable_dir / "cpa")
         dev_dir = ensure_directory(deliverable_dir / "dev")
-        base_name = f"Retained_Earnings_Rollforward_{ctx.year}"
 
-        csv_path = _resolve_output_path(
-            cpa_dir / f"{base_name}.csv",
+        rollforward_csv_path = _resolve_output_path(
+            cpa_dir / f"Book_Equity_Rollforward_{ctx.year}.csv",
             on_conflict=ctx.on_conflict,
             non_interactive=ctx.non_interactive,
         )
-        pdf_path = _resolve_output_path(
-            cpa_dir / f"{base_name}.pdf",
+        rollforward_pdf_path = _resolve_output_path(
+            cpa_dir / f"Book_Equity_Rollforward_{ctx.year}.pdf",
+            on_conflict=ctx.on_conflict,
+            non_interactive=ctx.non_interactive,
+        )
+        tie_out_csv_path = _resolve_output_path(
+            cpa_dir / f"Equity_Tie_Out_to_QBO_{ctx.year}.csv",
+            on_conflict=ctx.on_conflict,
+            non_interactive=ctx.non_interactive,
+        )
+        bridge_csv_path = _resolve_output_path(
+            cpa_dir / f"Distribution_Bridge_{ctx.year}.csv",
+            on_conflict=ctx.on_conflict,
+            non_interactive=ctx.non_interactive,
+        )
+        bridge_detail_csv_path = _resolve_output_path(
+            cpa_dir / f"Distribution_Bridge_Detail_{ctx.year}.csv",
+            on_conflict=ctx.on_conflict,
+            non_interactive=ctx.non_interactive,
+        )
+        shareholder_receivable_csv_path = _resolve_output_path(
+            cpa_dir / f"Shareholder_Receivable_Activity_{ctx.year}.csv",
+            on_conflict=ctx.on_conflict,
+            non_interactive=ctx.non_interactive,
+        )
+        direct_equity_csv_path = _resolve_output_path(
+            cpa_dir / f"Direct_Equity_Postings_{ctx.year}.csv",
+            on_conflict=ctx.on_conflict,
+            non_interactive=ctx.non_interactive,
+        )
+        cpa_notes_path = _resolve_output_path(
+            cpa_dir / "CPA_NOTES.md",
             on_conflict=ctx.on_conflict,
             non_interactive=ctx.non_interactive,
         )
@@ -90,7 +126,7 @@ class RetainedEarningsDeliverable:
             None
             if ctx.no_raw
             else _resolve_output_path(
-                dev_dir / f"{base_name}_data.json",
+                dev_dir / f"Equity_Review_{ctx.year}_data.json",
                 on_conflict=ctx.on_conflict,
                 non_interactive=ctx.non_interactive,
             )
@@ -102,18 +138,37 @@ class RetainedEarningsDeliverable:
         )
 
         write_rollforward_csv(
-            path=csv_path,
+            path=rollforward_csv_path,
             year=ctx.year,
             rollforward=rollforward,
             miscoded_distribution_count=miscoded_count,
         )
         write_rollforward_pdf(
-            path=pdf_path,
+            path=rollforward_pdf_path,
             year=ctx.year,
             rollforward=rollforward,
             miscoded_distribution_count=miscoded_count,
             company_name=company_name,
         )
+        write_equity_tie_out_csv(path=tie_out_csv_path, rows=source.equity_tie_out_rows)
+        write_distribution_bridge_csv(
+            path=bridge_csv_path,
+            year=ctx.year,
+            bridge=source.distribution_balance_bridge,
+        )
+        write_distribution_bridge_detail_csv(
+            path=bridge_detail_csv_path,
+            rows=source.distribution_bridge_detail_rows,
+        )
+        write_equity_activity_csv(
+            path=shareholder_receivable_csv_path,
+            rows=source.shareholder_receivable_rows,
+        )
+        write_equity_activity_csv(
+            path=direct_equity_csv_path,
+            rows=source.direct_equity_rows,
+        )
+        write_cpa_notes(path=cpa_notes_path)
         if data_json_path is not None:
             write_rollforward_data_json(
                 path=data_json_path,
@@ -126,6 +181,8 @@ class RetainedEarningsDeliverable:
                     "general_ledger": "store",
                     "current_balance_sheet": "store",
                 },
+                equity_tie_out_rows=source.equity_tie_out_rows,
+                distribution_bridge=source.distribution_balance_bridge,
             )
 
         warnings = list(structural_flags)
@@ -134,7 +191,17 @@ class RetainedEarningsDeliverable:
                 f"Detected {miscoded_count} likely miscoded distribution transaction(s)."
             )
 
-        artifacts = [csv_path, pdf_path, miscoded.csv_path]
+        artifacts = [
+            rollforward_csv_path,
+            rollforward_pdf_path,
+            tie_out_csv_path,
+            bridge_csv_path,
+            bridge_detail_csv_path,
+            shareholder_receivable_csv_path,
+            direct_equity_csv_path,
+            cpa_notes_path,
+            miscoded.csv_path,
+        ]
         if data_json_path is not None:
             artifacts.append(data_json_path)
         _write_metadata(
@@ -144,10 +211,20 @@ class RetainedEarningsDeliverable:
             warnings=warnings,
             inputs={
                 "year": ctx.year,
-                "beginning_re": f"{source.beginning_retained_earnings:.2f}",
+                "beginning_book_equity_bucket": f"{source.beginning_book_equity_bucket:.2f}",
                 "net_income": f"{source.net_income:.2f}",
-                "distributions": f"{source.distributions:.2f}",
-                "actual_ending_re": f"{source.actual_ending_retained_earnings:.2f}",
+                "distribution_total_gl": f"{source.distributions_gl:.2f}",
+                "distribution_total_bs_change": f"{source.distributions_bs_change:.2f}",
+                "contributions_total": f"{source.contributions:.2f}",
+                "other_direct_equity_postings_total": (
+                    f"{source.other_direct_equity_postings:.2f}"
+                ),
+                "actual_ending_book_equity_bucket": (
+                    f"{source.actual_ending_book_equity_bucket:.2f}"
+                ),
+                "shareholder_receivable_ending_balance": (
+                    f"{source.shareholder_receivable_ending_balance:.2f}"
+                ),
                 "gl_row_count": len(source.gl_rows),
                 "miscoded_distribution_count": miscoded_count,
                 "no_raw": ctx.no_raw,
