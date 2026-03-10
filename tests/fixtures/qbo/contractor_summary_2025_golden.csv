@@ -1,3 +1,3 @@
-vendor_id,vendor_name,tax_id_on_file,total_paid,card_processor_total,non_card_total,selected_source_accounts,vendor_source_accounts,threshold,flagged_for_1099_review,review_note,requires_1099_review,flags
-e112a5c6e828,Alpha LLC,false,700.00,0.00,700.00,Contract Labor,Contract Labor,600.00,true,Meets non-card threshold; CPA review required.,true,requires_1099_review
-7368c1579b8f,Beta LLC,false,550.00,0.00,550.00,Contract Labor,Contract Labor,600.00,false,Below review threshold based on detected non-card activity.,false,
+vendor_id,vendor_name,tax_id_on_file,total_paid,other_review_account_total,refund_total,card_processor_total,non_card_total,selected_source_accounts,vendor_source_accounts,threshold,flagged_for_1099_review,review_note,requires_1099_review,flags
+e112a5c6e828,Alpha LLC,false,700.00,0.00,0.00,0.00,700.00,Contract Labor,Contract Labor,600.00,true,Meets non-card threshold; CPA review required.,true,requires_1099_review
+7368c1579b8f,Beta LLC,false,550.00,0.00,0.00,0.00,550.00,Contract Labor,Contract Labor,600.00,false,Below review threshold based on detected non-card activity.,false,

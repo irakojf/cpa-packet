@@ -22,6 +22,17 @@ def _coerce_money(value: object) -> Decimal:
     return decimal_value.quantize(_TWO_PLACES, rounding=ROUND_HALF_UP)
 
 
+def _coerce_signed_money(value: object) -> Decimal:
+    try:
+        decimal_value = value if isinstance(value, Decimal) else Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise ValueError("must be a valid decimal value") from exc
+
+    if not decimal_value.is_finite():
+        raise ValueError("must be finite")
+    return decimal_value.quantize(_TWO_PLACES, rounding=ROUND_HALF_UP)
+
+
 class ContractorRecord(BaseModel):
     """Aggregated contractor payment and 1099-review summary for one vendor."""
 
@@ -32,6 +43,8 @@ class ContractorRecord(BaseModel):
     tax_id_on_file: bool
     total_paid: Decimal = Field(ge=Decimal("0.00"))
     contractor_account_total: Decimal = Field(ge=Decimal("0.00"))
+    other_review_account_total: Decimal = Field(default=Decimal("0.00"))
+    refund_total: Decimal = Field(ge=Decimal("0.00"))
     card_processor_total: Decimal = Field(ge=Decimal("0.00"))
     non_card_total: Decimal = Field(ge=Decimal("0.00"))
     requires_1099_review: bool
@@ -60,6 +73,7 @@ class ContractorRecord(BaseModel):
     @field_validator(
         "total_paid",
         "contractor_account_total",
+        "refund_total",
         "card_processor_total",
         "non_card_total",
         mode="before",
@@ -67,3 +81,8 @@ class ContractorRecord(BaseModel):
     @classmethod
     def _coerce_amounts(cls, value: object) -> Decimal:
         return _coerce_money(value)
+
+    @field_validator("other_review_account_total", mode="before")
+    @classmethod
+    def _coerce_signed_amount(cls, value: object) -> Decimal:
+        return _coerce_signed_money(value)

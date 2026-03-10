@@ -80,8 +80,9 @@ class ContractorDataProvider(_AccountProviders, Protocol):
 
 class _ContractorTotals(TypedDict):
     display_name: str
-    total_paid_raw: Decimal
-    contractor_account_total_raw: Decimal
+    selected_total_raw: Decimal
+    other_review_total_raw: Decimal
+    refund_total_raw: Decimal
     card_processor_total_raw: Decimal
     source_accounts: set[str]
 
@@ -151,7 +152,19 @@ class ContractorSummaryDeliverable:
             (record.contractor_account_total for record in records),
             _ZERO,
         ).quantize(_CENT, rounding=ROUND_HALF_UP)
+        contractor_other_review_total = sum(
+            (record.other_review_account_total for record in records),
+            _ZERO,
+        ).quantize(_CENT, rounding=ROUND_HALF_UP)
+        contractor_refund_total = sum((record.refund_total for record in records), _ZERO).quantize(
+            _CENT,
+            rounding=ROUND_HALF_UP,
+        )
         selected_account_total = sum_selected_account_balances(
+            rows=gl_rows,
+            selected_account_names=selected_account_names,
+        )
+        selected_account_refund_total = sum_selected_account_refunds(
             rows=gl_rows,
             selected_account_names=selected_account_names,
         )
@@ -184,7 +197,10 @@ class ContractorSummaryDeliverable:
             gl_row_count=len(gl_rows),
             contractor_total_paid=contractor_total_paid,
             contractor_selected_total=contractor_selected_total,
+            contractor_other_review_total=contractor_other_review_total,
+            contractor_refund_total=contractor_refund_total,
             selected_account_total=selected_account_total,
+            selected_account_refund_total=selected_account_refund_total,
             has_reconciliation_mismatch=has_reconciliation_mismatch,
             warnings=warnings,
             company_name=company_name,
@@ -275,13 +291,15 @@ def build_contractor_records(
             vendor_id,
             {
                 "display_name": display_name,
-                "total_paid_raw": _ZERO,
-                "contractor_account_total_raw": _ZERO,
+                "selected_total_raw": _ZERO,
+                "other_review_total_raw": _ZERO,
+                "refund_total_raw": _ZERO,
                 "card_processor_total_raw": _ZERO,
                 "source_accounts": set(),
             },
         )
-        bucket["contractor_account_total_raw"] += amount
+        if _account_matches(account_name, selected_account_names):
+            bucket["source_accounts"].add(_leaf_account_name(account_name))
 
     for row in rows:
         display_name = (row.payee or "").strip() or "Unknown Vendor"
@@ -296,27 +314,38 @@ def build_contractor_records(
         if not _account_matches(account_name, row_account_scope):
             continue
 
-        amount = _payment_amount_for_review(row)
-        if amount == _ZERO:
+        payment_amount = _payment_amount_for_review(row)
+        refund_amount = _refund_amount_for_review(row)
+        if payment_amount == _ZERO and refund_amount == _ZERO:
             continue
 
         bucket = totals[vendor_id]
-        bucket["total_paid_raw"] += amount
         bucket["source_accounts"].add(_leaf_account_name(account_name))
-        if amount > _ZERO and _is_card_payment_row(row):
-            bucket["card_processor_total_raw"] += amount
+        if _account_matches(account_name, selected_account_names):
+            bucket["selected_total_raw"] += payment_amount
+            bucket["refund_total_raw"] += refund_amount
+            if payment_amount > _ZERO and _is_card_payment_row(row):
+                bucket["card_processor_total_raw"] += payment_amount
+            continue
+
+        bucket["other_review_total_raw"] += payment_amount
+        bucket["refund_total_raw"] += refund_amount
 
     records: list[ContractorRecord] = []
     for vendor_id, bucket in sorted(
         totals.items(),
         key=lambda item: item[1]["display_name"].lower(),
     ):
-        total_paid_raw = bucket["total_paid_raw"].quantize(_CENT, rounding=ROUND_HALF_UP)
-        total_paid = total_paid_raw.quantize(_CENT, rounding=ROUND_HALF_UP)
-        contractor_account_total = bucket["contractor_account_total_raw"].quantize(
+        total_paid = bucket["selected_total_raw"].quantize(_CENT, rounding=ROUND_HALF_UP)
+        contractor_account_total = total_paid.quantize(
             _CENT,
             rounding=ROUND_HALF_UP,
         )
+        other_review_account_total = bucket["other_review_total_raw"].quantize(
+            _CENT,
+            rounding=ROUND_HALF_UP,
+        )
+        refund_total = bucket["refund_total_raw"].quantize(_CENT, rounding=ROUND_HALF_UP)
 
         if total_paid <= _ZERO:
             continue
@@ -337,6 +366,8 @@ def build_contractor_records(
                 tax_id_on_file=False,
                 total_paid=total_paid,
                 contractor_account_total=contractor_account_total,
+                other_review_account_total=other_review_account_total,
+                refund_total=refund_total,
                 card_processor_total=card_total,
                 non_card_total=non_card_total,
                 requires_1099_review=requires_review,
@@ -358,7 +389,10 @@ def write_contractor_output_artifacts(
     gl_row_count: int,
     contractor_total_paid: Decimal,
     contractor_selected_total: Decimal,
+    contractor_other_review_total: Decimal,
+    contractor_refund_total: Decimal,
     selected_account_total: Decimal,
+    selected_account_refund_total: Decimal,
     has_reconciliation_mismatch: bool,
     warnings: list[str],
     company_name: str = "Unknown Company",
@@ -437,7 +471,10 @@ def write_contractor_output_artifacts(
         record_count=len(records),
         contractor_total_paid=contractor_total_paid,
         contractor_selected_total=contractor_selected_total,
+        contractor_other_review_total=contractor_other_review_total,
+        contractor_refund_total=contractor_refund_total,
         selected_account_total=selected_account_total,
+        selected_account_refund_total=selected_account_refund_total,
         has_reconciliation_mismatch=has_reconciliation_mismatch,
         no_raw=ctx.no_raw,
         redact=ctx.redact,
@@ -470,6 +507,8 @@ def _write_contractor_csv(
             "vendor_name",
             "tax_id_on_file",
             "total_paid",
+            "other_review_account_total",
+            "refund_total",
             "card_processor_total",
             "non_card_total",
             "selected_source_accounts",
@@ -486,6 +525,8 @@ def _write_contractor_csv(
                 "vendor_name": record.display_name,
                 "tax_id_on_file": str(record.tax_id_on_file).lower(),
                 "total_paid": format(record.total_paid, "f"),
+                "other_review_account_total": format(record.other_review_account_total, "f"),
+                "refund_total": format(record.refund_total, "f"),
                 "card_processor_total": format(record.card_processor_total, "f"),
                 "non_card_total": format(record.non_card_total, "f"),
                 "selected_source_accounts": selected_source_accounts,
@@ -509,6 +550,8 @@ def _write_flagged_review_csv(*, path: Path, records: Sequence[ContractorRecord]
             "vendor_id",
             "display_name",
             "total_paid",
+            "other_review_account_total",
+            "refund_total",
             "non_card_total",
             "requires_1099_review",
             "flags",
@@ -518,6 +561,8 @@ def _write_flagged_review_csv(*, path: Path, records: Sequence[ContractorRecord]
                 "vendor_id": record.vendor_id,
                 "display_name": record.display_name,
                 "total_paid": format(record.total_paid, "f"),
+                "other_review_account_total": format(record.other_review_account_total, "f"),
+                "refund_total": format(record.refund_total, "f"),
                 "non_card_total": format(record.non_card_total, "f"),
                 "requires_1099_review": str(record.requires_1099_review).lower(),
                 "flags": "|".join(record.flags),
@@ -544,6 +589,14 @@ def _write_contractor_pdf(
     total_paid = sum((record.total_paid for record in records), _ZERO).quantize(
         _CENT, rounding=ROUND_HALF_UP
     )
+    total_other_review = sum(
+        (record.other_review_account_total for record in records),
+        _ZERO,
+    ).quantize(_CENT, rounding=ROUND_HALF_UP)
+    total_refunds = sum((record.refund_total for record in records), _ZERO).quantize(
+        _CENT,
+        rounding=ROUND_HALF_UP,
+    )
     total_non_card = sum((record.non_card_total for record in records), _ZERO).quantize(
         _CENT, rounding=ROUND_HALF_UP
     )
@@ -565,7 +618,9 @@ def _write_contractor_pdf(
                 )
             ),
             PdfTableRow(cells=("Total Vendors", str(vendor_count))),
-            PdfTableRow(cells=("Total Paid", _fmt_money(total_paid))),
+            PdfTableRow(cells=("Selected Account Total", _fmt_money(total_paid))),
+            PdfTableRow(cells=("Other Same-Vendor Spend", _fmt_money(total_other_review))),
+            PdfTableRow(cells=("Refunds / Reversals", _fmt_money(total_refunds))),
             PdfTableRow(cells=("Card Processor Payments", _fmt_money(total_card))),
             PdfTableRow(cells=("Non-Card Payments", _fmt_money(total_non_card))),
             PdfTableRow(cells=("Flagged for 1099 Review", str(flagged_count))),
@@ -581,6 +636,8 @@ def _write_contractor_pdf(
                 cells=(
                     record.display_name,
                     _fmt_money(record.total_paid),
+                    _fmt_money(record.other_review_account_total),
+                    _fmt_money(record.refund_total),
                     _fmt_money(record.non_card_total),
                     "Yes" if record.requires_1099_review else "No",
                 ),
@@ -589,14 +646,28 @@ def _write_contractor_pdf(
         )
     detail_rows.append(
         PdfTableRow(
-            cells=("Total", _fmt_money(total_paid), _fmt_money(total_non_card), ""),
+            cells=(
+                "Total",
+                _fmt_money(total_paid),
+                _fmt_money(total_other_review),
+                _fmt_money(total_refunds),
+                _fmt_money(total_non_card),
+                "",
+            ),
             row_type="total",
         )
     )
 
     detail_section = PdfTableSection(
         title="Contractor Detail",
-        headers=("Vendor Name", "Total Paid", "Non-Card Total", "1099 Review"),
+        headers=(
+            "Vendor Name",
+            "Selected Total",
+            "Other Accounts",
+            "Refunds",
+            "Non-Card Total",
+            "1099 Review",
+        ),
         rows=detail_rows,
     )
 
@@ -610,6 +681,18 @@ def _write_contractor_pdf(
 
 
 def _review_note(record: ContractorRecord) -> str:
+    if record.other_review_account_total != _ZERO and record.refund_total != _ZERO:
+        return (
+            "Selected-account total shown; additional same-vendor spend and "
+            "refund activity require review."
+        )
+    if record.other_review_account_total != _ZERO:
+        return (
+            "Selected-account total shown; additional same-vendor spend exists "
+            "in other accounts."
+        )
+    if record.refund_total != _ZERO:
+        return "Selected-account total shown; refund activity requires CPA review."
     if record.requires_1099_review:
         return "Meets non-card threshold; CPA review required."
     if record.non_card_total == _ZERO:
@@ -636,6 +719,8 @@ def _build_raw_payload(
                 "tax_id_on_file": record.tax_id_on_file,
                 "total_paid": format(record.total_paid, "f"),
                 "contractor_account_total": format(record.contractor_account_total, "f"),
+                "other_review_account_total": format(record.other_review_account_total, "f"),
+                "refund_total": format(record.refund_total, "f"),
                 "card_processor_total": format(record.card_processor_total, "f"),
                 "non_card_total": format(record.non_card_total, "f"),
                 "requires_1099_review": record.requires_1099_review,
@@ -657,7 +742,10 @@ def _build_metadata_inputs(
     record_count: int,
     contractor_total_paid: Decimal,
     contractor_selected_total: Decimal,
+    contractor_other_review_total: Decimal,
+    contractor_refund_total: Decimal,
     selected_account_total: Decimal,
+    selected_account_refund_total: Decimal,
     has_reconciliation_mismatch: bool,
     no_raw: bool,
     redact: bool,
@@ -679,7 +767,10 @@ def _build_metadata_inputs(
         "record_count": record_count,
         "contractor_total_paid": format(contractor_total_paid, "f"),
         "contractor_selected_total": format(contractor_selected_total, "f"),
+        "contractor_other_review_total": format(contractor_other_review_total, "f"),
+        "contractor_refund_total": format(contractor_refund_total, "f"),
         "selected_account_total": format(selected_account_total, "f"),
+        "selected_account_refund_total": format(selected_account_refund_total, "f"),
         "has_reconciliation_mismatch": has_reconciliation_mismatch,
     }
 
@@ -689,7 +780,7 @@ def sum_selected_account_balances(
     rows: Sequence[GeneralLedgerRow],
     selected_account_names: set[str],
 ) -> Decimal:
-    """Return the selected-account total using review-style vendor payment amounts."""
+    """Return the selected-account total using gross, non-refund payment amounts."""
     if not selected_account_names:
         return _ZERO
 
@@ -709,8 +800,37 @@ def _payment_amount_for_review(row: GeneralLedgerRow) -> Decimal:
     if amount == _ZERO:
         return _ZERO
     if _is_refund_like_row(row):
-        return -amount
+        return _ZERO
     return amount
+
+
+def sum_selected_account_refunds(
+    *,
+    rows: Sequence[GeneralLedgerRow],
+    selected_account_names: set[str],
+) -> Decimal:
+    """Return refund/reversal activity posted to selected contractor accounts."""
+    if not selected_account_names:
+        return _ZERO
+
+    total = _ZERO
+    for row in rows:
+        if not _account_matches(row.account_name.strip(), selected_account_names):
+            continue
+        amount = _refund_amount_for_review(row)
+        if amount == _ZERO:
+            continue
+        total += amount
+    return total.quantize(_CENT, rounding=ROUND_HALF_UP)
+
+
+def _refund_amount_for_review(row: GeneralLedgerRow) -> Decimal:
+    amount = row.signed_amount.copy_abs().quantize(_CENT, rounding=ROUND_HALF_UP)
+    if amount == _ZERO:
+        return _ZERO
+    if _is_refund_like_row(row):
+        return amount
+    return _ZERO
 
 
 def _is_refund_like_row(row: GeneralLedgerRow) -> bool:
