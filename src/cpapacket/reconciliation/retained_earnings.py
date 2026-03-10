@@ -274,32 +274,20 @@ def build_retained_earnings_rollforward(
     structural_flags: list[str],
 ) -> RetainedEarningsRollforward:
     """Construct a canonical book-equity rollforward result."""
-    expected_gl_basis = (
+    expected_ending_book_equity_bucket = (
         source.beginning_book_equity_bucket
         + source.net_income
-        - source.distributions_gl
-        + source.contributions
         + source.other_direct_equity_postings
     ).quantize(_CENT, rounding=ROUND_HALF_UP)
-    expected_bs_basis = (
-        source.beginning_book_equity_bucket
-        + source.net_income
-        - source.distributions_bs_change
-        + source.contributions
-        + source.other_direct_equity_postings
-    ).quantize(_CENT, rounding=ROUND_HALF_UP)
-    gl_basis_difference = (expected_gl_basis - source.actual_ending_book_equity_bucket).quantize(
-        _CENT,
-        rounding=ROUND_HALF_UP,
-    )
-    bs_basis_difference = (expected_bs_basis - source.actual_ending_book_equity_bucket).quantize(
+    ending_book_equity_difference = (
+        expected_ending_book_equity_bucket - source.actual_ending_book_equity_bucket
+    ).quantize(
         _CENT,
         rounding=ROUND_HALF_UP,
     )
     status: Literal["Balanced", "Review"] = (
         "Balanced"
-        if gl_basis_difference.copy_abs() <= RETAINED_EARNINGS_TOLERANCE
-        and bs_basis_difference.copy_abs() <= RETAINED_EARNINGS_TOLERANCE
+        if ending_book_equity_difference.copy_abs() <= RETAINED_EARNINGS_TOLERANCE
         else "Review"
     )
     return RetainedEarningsRollforward(
@@ -307,13 +295,11 @@ def build_retained_earnings_rollforward(
         current_year_net_income=source.net_income,
         current_year_distributions_gl=source.distributions_gl,
         current_year_distributions_bs_change=source.distributions_bs_change,
-        current_year_contributions=source.contributions,
-        other_direct_equity_postings=source.other_direct_equity_postings,
-        expected_ending_book_equity_bucket_gl_basis=expected_gl_basis,
-        expected_ending_book_equity_bucket_bs_basis=expected_bs_basis,
+        current_year_contributions_gl=source.contributions,
+        other_direct_book_equity_postings=source.other_direct_equity_postings,
+        expected_ending_book_equity_bucket=expected_ending_book_equity_bucket,
         actual_ending_book_equity_bucket=source.actual_ending_book_equity_bucket,
-        gl_basis_difference=gl_basis_difference,
-        bs_basis_difference=bs_basis_difference,
+        ending_book_equity_difference=ending_book_equity_difference,
         status=status,
         flags=structural_flags,
     )
@@ -368,7 +354,7 @@ def extract_contribution_total(gl_rows: list[GeneralLedgerRow]) -> Decimal:
         if not _is_contribution_equity_row(row):
             continue
         total += _equity_effect_amount(row)
-    return total.quantize(_CENT, rounding=ROUND_HALF_UP)
+    return total.copy_abs().quantize(_CENT, rounding=ROUND_HALF_UP)
 
 
 def extract_distribution_balance_from_balance_sheet(

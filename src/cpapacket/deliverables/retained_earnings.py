@@ -215,8 +215,8 @@ class RetainedEarningsDeliverable:
                 "net_income": f"{source.net_income:.2f}",
                 "distribution_total_gl": f"{source.distributions_gl:.2f}",
                 "distribution_total_bs_change": f"{source.distributions_bs_change:.2f}",
-                "contributions_total": f"{source.contributions:.2f}",
-                "other_direct_equity_postings_total": (
+                "contributions_total_gl": f"{source.contributions:.2f}",
+                "other_direct_book_equity_postings_total": (
                     f"{source.other_direct_equity_postings:.2f}"
                 ),
                 "actual_ending_book_equity_bucket": (

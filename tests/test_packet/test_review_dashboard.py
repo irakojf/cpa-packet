@@ -26,7 +26,7 @@ def test_write_review_dashboard_creates_markdown_pdf_and_metadata(
 
     pnl_dir = tmp_path / "01_Year-End_Profit_and_Loss" / "cpa"
     pnl_dir.mkdir(parents=True)
-    (pnl_dir / "Profit_and_Loss_2025.csv").write_text(
+    (pnl_dir / "Profit_and_Loss_2025-01-01_to_2025-12-31_accrual.csv").write_text(
         "section,level,row_type,label,amount,path\n"
         "Uncategorized,0,total,Net Income,123.45,Net Income\n",
         encoding="utf-8",
@@ -34,6 +34,15 @@ def test_write_review_dashboard_creates_markdown_pdf_and_metadata(
 
     bs_dir = tmp_path / "02_Year-End_Balance_Sheet" / "cpa"
     bs_dir.mkdir(parents=True)
+    (bs_dir / "Balance_Sheet_2024-12-31.csv").write_text(
+        "section,level,row_type,label,amount,path\n"
+        "Assets,3,account,Operating Checking,9999.00,"
+        "ASSETS > Current Assets > Bank Accounts > Operating Checking\n"
+        "Assets,3,account,Shareholder Receivable,10.00,"
+        "ASSETS > Current Assets > Other Current Assets > Shareholder Receivable\n"
+        "Liabilities,1,total,Total Liabilities,111.00,LIABILITIES > Total Liabilities\n",
+        encoding="utf-8",
+    )
     (bs_dir / "Balance_Sheet_2025-12-31.csv").write_text(
         "section,level,row_type,label,amount,path\n"
         "Assets,3,account,Operating Checking,1000.00,"
@@ -48,11 +57,11 @@ def test_write_review_dashboard_creates_markdown_pdf_and_metadata(
     equity_dir.mkdir(parents=True)
     (equity_dir / "Book_Equity_Rollforward_2025.csv").write_text(
         "year,beginning_book_equity_bucket,current_year_net_income,current_year_distributions_gl,"
-        "current_year_distributions_bs_change,current_year_contributions,other_direct_equity_postings,"
-        "expected_ending_book_equity_bucket_gl_basis,expected_ending_book_equity_bucket_bs_basis,"
-        "actual_ending_book_equity_bucket,gl_basis_difference,bs_basis_difference,status,flags,"
+        "current_year_distributions_bs_change,current_year_contributions_gl,"
+        "other_direct_book_equity_postings,expected_ending_book_equity_bucket,"
+        "actual_ending_book_equity_bucket,ending_book_equity_difference,status,flags,"
         "miscoded_distribution_count\n"
-        "2025,100.00,123.45,50.00,60.00,25.00,0.00,198.45,188.45,198.45,0.00,-10.00,Review,"
+        "2025,100.00,123.45,50.00,60.00,25.00,0.00,223.45,223.45,0.00,Balanced,"
         "distributions_gl_vs_bs_mismatch|shareholder_receivable_present,0\n",
         encoding="utf-8",
     )

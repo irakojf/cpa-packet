@@ -12,6 +12,7 @@ from cpapacket.reconciliation.retained_earnings import (
     RetainedEarningsSourceData,
     build_retained_earnings_rollforward,
     evaluate_re_structural_flags,
+    extract_contribution_total,
     extract_distribution_balance_from_balance_sheet,
     extract_distribution_total,
     extract_net_income_from_pnl_report,
@@ -305,6 +306,37 @@ def test_extract_distribution_total_excludes_shareholder_contributions() -> None
     ]
 
     assert extract_distribution_total(rows) == Decimal("0.00")
+
+
+def test_extract_contribution_total_normalizes_positive_activity_total() -> None:
+    rows = [
+        GeneralLedgerRow(
+            txn_id="EQ-4",
+            date=date(2025, 6, 4),
+            transaction_type="Deposit",
+            document_number="EQ-4",
+            account_name="Shareholders' equity:Contributions",
+            account_type="Equity",
+            payee="Owner",
+            memo="capital contribution",
+            debit=Decimal("5000"),
+            credit=Decimal("0"),
+        ),
+        GeneralLedgerRow(
+            txn_id="EQ-5",
+            date=date(2025, 6, 5),
+            transaction_type="Deposit",
+            document_number="EQ-5",
+            account_name="Shareholders' equity:Contributions",
+            account_type="Equity",
+            payee="Owner",
+            memo="capital contribution",
+            debit=Decimal("7000"),
+            credit=Decimal("0"),
+        ),
+    ]
+
+    assert extract_contribution_total(rows) == Decimal("12000.00")
 
 
 def test_extract_net_income_from_pnl_report_handles_income_and_loss() -> None:
@@ -722,12 +754,20 @@ def test_build_retained_earnings_rollforward_balanced_status() -> None:
         structural_flags=["distributions_exceed_current_year_income"],
     )
 
-    assert result.expected_ending_book_equity_bucket_gl_basis == Decimal("140.00")
-    assert result.expected_ending_book_equity_bucket_bs_basis == Decimal("140.00")
-    assert result.gl_basis_difference == Decimal("0.00")
-    assert result.bs_basis_difference == Decimal("0.00")
-    assert result.status == "Balanced"
+    assert result.expected_ending_book_equity_bucket == Decimal("150.00")
+    assert result.ending_book_equity_difference == Decimal("10.00")
+    assert result.status == "Review"
     assert result.flags == ["distributions_exceed_current_year_income"]
+
+
+def test_build_retained_earnings_rollforward_balanced_when_book_equity_ties() -> None:
+    source = _sample_source_data(actual=Decimal("150.00"))
+    result = build_retained_earnings_rollforward(source=source, structural_flags=[])
+
+    assert result.expected_ending_book_equity_bucket == Decimal("150.00")
+    assert result.ending_book_equity_difference == Decimal("0.00")
+    assert result.status == "Balanced"
+    assert result.flags == []
 
 
 def test_build_retained_earnings_rollforward_mismatch_status() -> None:
@@ -737,9 +777,7 @@ def test_build_retained_earnings_rollforward_mismatch_status() -> None:
     )
     result = build_retained_earnings_rollforward(source=source, structural_flags=[])
 
-    assert result.expected_ending_book_equity_bucket_gl_basis == Decimal("140.00")
-    assert result.expected_ending_book_equity_bucket_bs_basis == Decimal("138.00")
-    assert result.gl_basis_difference == Decimal("-0.10")
-    assert result.bs_basis_difference == Decimal("-2.10")
+    assert result.expected_ending_book_equity_bucket == Decimal("150.00")
+    assert result.ending_book_equity_difference == Decimal("9.90")
     assert result.status == "Review"
     assert result.flags == []

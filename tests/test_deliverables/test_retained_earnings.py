@@ -19,7 +19,8 @@ class _Provider:
 
     def get_balance_sheet(self, year: int, as_of: str) -> dict[str, Any]:
         self.balance_sheet_calls.append((year, as_of))
-        value = "1000.00" if year == 2024 else "1100.00"
+        retained_earnings = "1000.00"
+        net_income = "0.00" if year == 2024 else "200.00"
         return {
             "Rows": {
                 "Row": [
@@ -30,7 +31,13 @@ class _Provider:
                                 {
                                     "ColData": [
                                         {"value": "Retained Earnings"},
-                                        {"value": value},
+                                        {"value": retained_earnings},
+                                    ]
+                                },
+                                {
+                                    "ColData": [
+                                        {"value": "Net Income"},
+                                        {"value": net_income},
                                     ]
                                 }
                             ]
@@ -141,17 +148,17 @@ def test_retained_earnings_deliverable_generates_artifacts_and_metadata(
         rows = list(csv.DictReader(handle))
     assert len(rows) == 1
     assert rows[0]["year"] == "2025"
-    assert rows[0]["status"] == "Review"
+    assert rows[0]["status"] == "Balanced"
     assert rows[0]["miscoded_distribution_count"] == "0"
 
     payload = json.loads(data_path.read_text(encoding="utf-8"))
     assert payload["year"] == 2025
-    assert payload["rollforward"]["expected_ending_book_equity_bucket_gl_basis"] == "1100.00"
-    assert payload["rollforward"]["actual_ending_book_equity_bucket"] == "1100.00"
+    assert payload["rollforward"]["expected_ending_book_equity_bucket"] == "1200.00"
+    assert payload["rollforward"]["actual_ending_book_equity_bucket"] == "1200.00"
 
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     assert metadata["deliverable"] == "retained_earnings"
-    assert metadata["schema_versions"] == {"csv": "2.0"}
+    assert metadata["schema_versions"] == {"csv": "3.0"}
     assert "input_fingerprint" in metadata
 
 

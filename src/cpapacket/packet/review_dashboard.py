@@ -22,15 +22,21 @@ def write_review_dashboard(*, output_root: Path | str, year: int) -> tuple[Path,
     root = Path(output_root)
     root.mkdir(parents=True, exist_ok=True)
 
-    pnl_csv = _find_first(root / "01_Year-End_Profit_and_Loss" / "cpa", "*.csv")
-    balance_sheet_csv = _find_first(root / "02_Year-End_Balance_Sheet" / "cpa", "*.csv")
-    equity_csv = _find_first(
-        root / "09_Retained_Earnings_Rollforward" / "cpa",
-        "Book_Equity_Rollforward_*.csv",
+    pnl_csv = _find_year_specific(
+        root / "01_Year-End_Profit_and_Loss" / "cpa",
+        f"Profit_and_Loss_{year}-01-01_to_{year}-12-31_*.csv",
     )
-    contractor_csv = _find_first(
+    balance_sheet_csv = _find_year_specific(
+        root / "02_Year-End_Balance_Sheet" / "cpa",
+        f"Balance_Sheet_{year}-12-31.csv",
+    )
+    equity_csv = _find_year_specific(
+        root / "09_Retained_Earnings_Rollforward" / "cpa",
+        f"Book_Equity_Rollforward_{year}.csv",
+    )
+    contractor_csv = _find_year_specific(
         root / "07_Contractor_1099_Summary" / "cpa",
-        "Contractor_1099_Review_*.csv",
+        f"Contractor_1099_Review_{year}.csv",
     )
 
     net_income = _lookup_csv_amount(pnl_csv, "label", "Net Income")
@@ -42,7 +48,7 @@ def write_review_dashboard(*, output_root: Path | str, year: int) -> tuple[Path,
         "shareholder receivable",
     )
     distributions_total = _read_equity_value(equity_csv, "current_year_distributions_gl")
-    contributions_total = _read_equity_value(equity_csv, "current_year_contributions")
+    contributions_total = _read_equity_value(equity_csv, "current_year_contributions_gl")
     review_flags = _read_pipe_list(equity_csv, "flags")
     contractor_review_count = _count_flagged_contractors(contractor_csv)
 
@@ -136,6 +142,13 @@ def _find_first(directory: Path, pattern: str) -> Path | None:
     if not directory.exists():
         return None
     return next(iter(sorted(directory.glob(pattern))), None)
+
+
+def _find_year_specific(directory: Path, pattern: str) -> Path | None:
+    match = _find_first(directory, pattern)
+    if match is not None:
+        return match
+    return None
 
 
 def _lookup_csv_amount(path: Path | None, key: str, match: str) -> str:

@@ -24,13 +24,11 @@ _ROLLFORWARD_FIELDS: tuple[str, ...] = (
     "current_year_net_income",
     "current_year_distributions_gl",
     "current_year_distributions_bs_change",
-    "current_year_contributions",
-    "other_direct_equity_postings",
-    "expected_ending_book_equity_bucket_gl_basis",
-    "expected_ending_book_equity_bucket_bs_basis",
+    "current_year_contributions_gl",
+    "other_direct_book_equity_postings",
+    "expected_ending_book_equity_bucket",
     "actual_ending_book_equity_bucket",
-    "gl_basis_difference",
-    "bs_basis_difference",
+    "ending_book_equity_difference",
     "status",
     "flags",
     "miscoded_distribution_count",
@@ -52,17 +50,15 @@ def to_rollforward_csv_row(
         "current_year_distributions_bs_change": (
             f"{rollforward.current_year_distributions_bs_change:.2f}"
         ),
-        "current_year_contributions": f"{rollforward.current_year_contributions:.2f}",
-        "other_direct_equity_postings": f"{rollforward.other_direct_equity_postings:.2f}",
-        "expected_ending_book_equity_bucket_gl_basis": (
-            f"{rollforward.expected_ending_book_equity_bucket_gl_basis:.2f}"
+        "current_year_contributions_gl": f"{rollforward.current_year_contributions_gl:.2f}",
+        "other_direct_book_equity_postings": (
+            f"{rollforward.other_direct_book_equity_postings:.2f}"
         ),
-        "expected_ending_book_equity_bucket_bs_basis": (
-            f"{rollforward.expected_ending_book_equity_bucket_bs_basis:.2f}"
+        "expected_ending_book_equity_bucket": (
+            f"{rollforward.expected_ending_book_equity_bucket:.2f}"
         ),
         "actual_ending_book_equity_bucket": f"{rollforward.actual_ending_book_equity_bucket:.2f}",
-        "gl_basis_difference": f"{rollforward.gl_basis_difference:.2f}",
-        "bs_basis_difference": f"{rollforward.bs_basis_difference:.2f}",
+        "ending_book_equity_difference": f"{rollforward.ending_book_equity_difference:.2f}",
         "status": rollforward.status,
         "flags": "|".join(rollforward.flags),
         "miscoded_distribution_count": str(max(miscoded_distribution_count, 0)),
@@ -318,20 +314,16 @@ def write_rollforward_pdf(
             ),
             PdfBodyLine(
                 text="Contributions",
-                amount=f"{rollforward.current_year_contributions:.2f}",
+                amount=f"{rollforward.current_year_contributions_gl:.2f}",
             ),
             PdfBodyLine(
-                text="Other direct equity postings",
-                amount=f"{rollforward.other_direct_equity_postings:.2f}",
+                text="Other direct book-equity postings",
+                amount=f"{rollforward.other_direct_book_equity_postings:.2f}",
             ),
             PdfBodyLine(text="Rollforward", row_type="header"),
             PdfBodyLine(
-                text="Expected ending bucket on GL basis",
-                amount=f"{rollforward.expected_ending_book_equity_bucket_gl_basis:.2f}",
-            ),
-            PdfBodyLine(
-                text="Expected ending bucket on BS basis",
-                amount=f"{rollforward.expected_ending_book_equity_bucket_bs_basis:.2f}",
+                text="Expected ending book-equity bucket",
+                amount=f"{rollforward.expected_ending_book_equity_bucket:.2f}",
             ),
             PdfBodyLine(
                 text="Actual ending bucket",
@@ -339,12 +331,8 @@ def write_rollforward_pdf(
                 row_type="total",
             ),
             PdfBodyLine(
-                text="GL basis difference",
-                amount=f"{rollforward.gl_basis_difference:.2f}",
-            ),
-            PdfBodyLine(
-                text="BS basis difference",
-                amount=f"{rollforward.bs_basis_difference:.2f}",
+                text="Ending book-equity difference",
+                amount=f"{rollforward.ending_book_equity_difference:.2f}",
             ),
             PdfBodyLine(text="Review Flags", row_type="header"),
             PdfBodyLine(text=f"Status: {rollforward.status}"),
@@ -362,7 +350,15 @@ def write_cpa_notes(*, path: Path) -> None:
             "- This is a book-equity review package.",
             "- It is not shareholder basis.",
             "- It is not AAA/OAA.",
+            (
+                "- The rollforward ties beginning book equity plus current-year "
+                "net income to the ending book-equity bucket."
+            ),
             "- QBO may display net income and distributions as separate equity lines.",
+            (
+                "- Distributions and contributions are shown as separate owner-equity "
+                "activity, not rolled into the ending book-equity bucket."
+            ),
             "- When GL distributions and balance-sheet distributions do not agree, both are shown.",
             "- Shareholder receivable activity requires manual CPA judgment.",
             "",

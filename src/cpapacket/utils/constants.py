@@ -44,7 +44,7 @@ SCHEMA_VERSIONS: Final[dict[str, dict[str, str]]] = {
     "contractor": {"csv": "2.0"},
     "estimated_tax": {"csv": "1.0"},
     "payroll_recon": {"csv": "1.0"},
-    "retained_earnings": {"csv": "2.0"},
+    "retained_earnings": {"csv": "3.0"},
     "distributions": {"csv": "2.0"},
     "review_dashboard": {"md": "1.0", "pdf": "1.0"},
 }

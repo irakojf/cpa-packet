@@ -19,13 +19,11 @@ class RetainedEarningsRollforward(BaseModel):
     current_year_net_income: Decimal
     current_year_distributions_gl: Decimal
     current_year_distributions_bs_change: Decimal
-    current_year_contributions: Decimal
-    other_direct_equity_postings: Decimal
-    expected_ending_book_equity_bucket_gl_basis: Decimal
-    expected_ending_book_equity_bucket_bs_basis: Decimal
+    current_year_contributions_gl: Decimal
+    other_direct_book_equity_postings: Decimal
+    expected_ending_book_equity_bucket: Decimal
     actual_ending_book_equity_bucket: Decimal
-    gl_basis_difference: Decimal
-    bs_basis_difference: Decimal
+    ending_book_equity_difference: Decimal
     status: Literal["Balanced", "Review"]
     flags: list[str]
 
@@ -34,13 +32,11 @@ class RetainedEarningsRollforward(BaseModel):
         "current_year_net_income",
         "current_year_distributions_gl",
         "current_year_distributions_bs_change",
-        "current_year_contributions",
-        "other_direct_equity_postings",
-        "expected_ending_book_equity_bucket_gl_basis",
-        "expected_ending_book_equity_bucket_bs_basis",
+        "current_year_contributions_gl",
+        "other_direct_book_equity_postings",
+        "expected_ending_book_equity_bucket",
         "actual_ending_book_equity_bucket",
-        "gl_basis_difference",
-        "bs_basis_difference",
+        "ending_book_equity_difference",
         mode="before",
     )
     @classmethod
