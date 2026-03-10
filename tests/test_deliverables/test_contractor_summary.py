@@ -478,6 +478,70 @@ def test_build_contractor_records_does_not_roll_unknown_vendor_into_other_accoun
     assert records[0].source_accounts == ["Contract Labor"]
 
 
+def test_build_contractor_records_nets_deposit_refunds_against_vendor_total() -> None:
+    rows = [
+        GeneralLedgerRow(
+            txn_id="txn-1",
+            date=date(2025, 10, 16),
+            transaction_type="Expense",
+            document_number="982",
+            account_name="Cost of goods sold:Cost of labor - COGS",
+            account_type="Expense",
+            payee="Sohail Sayed",
+            memo="WISE payment",
+            debit=Decimal("0.00"),
+            credit=Decimal("1000.00"),
+        ),
+        GeneralLedgerRow(
+            txn_id="txn-2",
+            date=date(2025, 10, 24),
+            transaction_type="Deposit",
+            document_number="944",
+            account_name="Cost of goods sold:Cost of labor - COGS",
+            account_type="Expense",
+            payee="Sohail Sayed",
+            memo="Refund",
+            debit=Decimal("500.00"),
+            credit=Decimal("0.00"),
+        ),
+        GeneralLedgerRow(
+            txn_id="txn-3",
+            date=date(2025, 11, 4),
+            transaction_type="Expense",
+            document_number="983",
+            account_name="Cost of goods sold:Cost of labor - COGS",
+            account_type="Expense",
+            payee="Sohail Sayed",
+            memo="WISE payment",
+            debit=Decimal("0.00"),
+            credit=Decimal("1000.00"),
+        ),
+        GeneralLedgerRow(
+            txn_id="txn-4",
+            date=date(2025, 12, 5),
+            transaction_type="Expense",
+            document_number="981",
+            account_name="Cost of goods sold:Cost of labor - COGS",
+            account_type="Expense",
+            payee="Sohail Sayed",
+            memo="WISE payment",
+            debit=Decimal("0.00"),
+            credit=Decimal("500.00"),
+        ),
+    ]
+
+    records = build_contractor_records(
+        rows=rows,
+        selected_account_names={"Cost of labor - COGS"},
+    )
+
+    assert len(records) == 1
+    assert records[0].display_name == "Sohail Sayed"
+    assert records[0].contractor_account_total == Decimal("2000.00")
+    assert records[0].total_paid == Decimal("2000.00")
+    assert records[0].non_card_total == Decimal("2000.00")
+
+
 def test_build_contractor_records_clamps_negative_card_bucket_and_preserves_total() -> None:
     rows = [
         GeneralLedgerRow(
@@ -576,6 +640,66 @@ def test_sum_selected_account_balances_sums_absolute_vendor_nets() -> None:
     )
 
     assert total == Decimal("2720.00")
+
+
+def test_sum_selected_account_balances_nets_refund_like_rows() -> None:
+    rows = [
+        GeneralLedgerRow(
+            txn_id="txn-1",
+            date=date(2025, 10, 16),
+            transaction_type="Expense",
+            document_number="982",
+            account_name="Cost of goods sold:Cost of labor - COGS",
+            account_type="Expense",
+            payee="Sohail Sayed",
+            memo="WISE payment",
+            debit=Decimal("0.00"),
+            credit=Decimal("1000.00"),
+        ),
+        GeneralLedgerRow(
+            txn_id="txn-2",
+            date=date(2025, 10, 24),
+            transaction_type="Deposit",
+            document_number="944",
+            account_name="Cost of goods sold:Cost of labor - COGS",
+            account_type="Expense",
+            payee="Sohail Sayed",
+            memo="Refund",
+            debit=Decimal("500.00"),
+            credit=Decimal("0.00"),
+        ),
+        GeneralLedgerRow(
+            txn_id="txn-3",
+            date=date(2025, 11, 4),
+            transaction_type="Expense",
+            document_number="983",
+            account_name="Cost of goods sold:Cost of labor - COGS",
+            account_type="Expense",
+            payee="Sohail Sayed",
+            memo="WISE payment",
+            debit=Decimal("0.00"),
+            credit=Decimal("1000.00"),
+        ),
+        GeneralLedgerRow(
+            txn_id="txn-4",
+            date=date(2025, 12, 5),
+            transaction_type="Expense",
+            document_number="981",
+            account_name="Cost of goods sold:Cost of labor - COGS",
+            account_type="Expense",
+            payee="Sohail Sayed",
+            memo="WISE payment",
+            debit=Decimal("0.00"),
+            credit=Decimal("500.00"),
+        ),
+    ]
+
+    total = sum_selected_account_balances(
+        rows=rows,
+        selected_account_names={"Cost of labor - COGS"},
+    )
+
+    assert total == Decimal("2000.00")
 
 
 def test_contractor_summary_deliverable_generates_outputs_and_metadata(

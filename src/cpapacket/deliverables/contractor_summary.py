@@ -47,6 +47,13 @@ _CARD_PAYMENT_HINTS = (
     "visa",
     "mastercard",
 )
+_REFUND_TRANSACTION_TYPES = {
+    "creditmemo",
+    "creditmemorefund",
+    "deposit",
+    "refundreceipt",
+    "vendorcredit",
+}
 
 
 class _AccountProviders(Protocol):
@@ -257,7 +264,7 @@ def build_contractor_records(
         if not _account_matches(account_name, selected_account_names):
             continue
 
-        amount = row.signed_amount.copy_abs().quantize(_CENT, rounding=ROUND_HALF_UP)
+        amount = _payment_amount_for_review(row)
         if amount == _ZERO:
             continue
 
@@ -289,14 +296,14 @@ def build_contractor_records(
         if not _account_matches(account_name, row_account_scope):
             continue
 
-        amount = row.signed_amount.copy_abs().quantize(_CENT, rounding=ROUND_HALF_UP)
+        amount = _payment_amount_for_review(row)
         if amount == _ZERO:
             continue
 
         bucket = totals[vendor_id]
         bucket["total_paid_raw"] += amount
         bucket["source_accounts"].add(_leaf_account_name(account_name))
-        if _is_card_payment_row(row):
+        if amount > _ZERO and _is_card_payment_row(row):
             bucket["card_processor_total_raw"] += amount
 
     records: list[ContractorRecord] = []
@@ -305,13 +312,13 @@ def build_contractor_records(
         key=lambda item: item[1]["display_name"].lower(),
     ):
         total_paid_raw = bucket["total_paid_raw"].quantize(_CENT, rounding=ROUND_HALF_UP)
-        total_paid = total_paid_raw.copy_abs().quantize(_CENT, rounding=ROUND_HALF_UP)
+        total_paid = total_paid_raw.quantize(_CENT, rounding=ROUND_HALF_UP)
         contractor_account_total = bucket["contractor_account_total_raw"].quantize(
             _CENT,
             rounding=ROUND_HALF_UP,
         )
 
-        if total_paid == _ZERO:
+        if total_paid <= _ZERO:
             continue
 
         card_total_raw = bucket["card_processor_total_raw"].quantize(_CENT, rounding=ROUND_HALF_UP)
@@ -682,7 +689,7 @@ def sum_selected_account_balances(
     rows: Sequence[GeneralLedgerRow],
     selected_account_names: set[str],
 ) -> Decimal:
-    """Return the selected-account total using absolute matched row amounts."""
+    """Return the selected-account total using review-style vendor payment amounts."""
     if not selected_account_names:
         return _ZERO
 
@@ -690,11 +697,25 @@ def sum_selected_account_balances(
     for row in rows:
         if not _account_matches(row.account_name.strip(), selected_account_names):
             continue
-        amount = row.signed_amount.copy_abs().quantize(_CENT, rounding=ROUND_HALF_UP)
+        amount = _payment_amount_for_review(row)
         if amount == _ZERO:
             continue
         total += amount
     return total.quantize(_CENT, rounding=ROUND_HALF_UP)
+
+
+def _payment_amount_for_review(row: GeneralLedgerRow) -> Decimal:
+    amount = row.signed_amount.copy_abs().quantize(_CENT, rounding=ROUND_HALF_UP)
+    if amount == _ZERO:
+        return _ZERO
+    if _is_refund_like_row(row):
+        return -amount
+    return amount
+
+
+def _is_refund_like_row(row: GeneralLedgerRow) -> bool:
+    normalized = row.transaction_type.casefold().replace(" ", "")
+    return normalized in _REFUND_TRANSACTION_TYPES
 
 
 def _resolve_selected_accounts(
