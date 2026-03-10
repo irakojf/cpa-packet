@@ -31,10 +31,12 @@ class ContractorRecord(BaseModel):
     display_name: str
     tax_id_on_file: bool
     total_paid: Decimal = Field(ge=Decimal("0.00"))
+    contractor_account_total: Decimal = Field(ge=Decimal("0.00"))
     card_processor_total: Decimal = Field(ge=Decimal("0.00"))
     non_card_total: Decimal = Field(ge=Decimal("0.00"))
     requires_1099_review: bool
     flags: list[str] = Field(default_factory=list)
+    source_accounts: list[str] = Field(default_factory=list)
 
     @field_validator("vendor_id", "display_name")
     @classmethod
@@ -44,7 +46,7 @@ class ContractorRecord(BaseModel):
             raise ValueError("must not be blank")
         return trimmed
 
-    @field_validator("flags")
+    @field_validator("flags", "source_accounts")
     @classmethod
     def _normalize_flags(cls, value: list[str]) -> list[str]:
         cleaned: list[str] = []
@@ -55,7 +57,13 @@ class ContractorRecord(BaseModel):
             cleaned.append(normalized)
         return cleaned
 
-    @field_validator("total_paid", "card_processor_total", "non_card_total", mode="before")
+    @field_validator(
+        "total_paid",
+        "contractor_account_total",
+        "card_processor_total",
+        "non_card_total",
+        mode="before",
+    )
     @classmethod
     def _coerce_amounts(cls, value: object) -> Decimal:
         return _coerce_money(value)

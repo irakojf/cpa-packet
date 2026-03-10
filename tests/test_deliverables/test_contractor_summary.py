@@ -17,6 +17,7 @@ from cpapacket.deliverables.contractor_summary import (
     _prompt_selected_accounts,
     build_contractor_records,
     detect_contractor_accounts,
+    detect_reviewable_expense_accounts,
     should_flag_for_1099_review,
     sum_selected_account_balances,
 )
@@ -125,6 +126,29 @@ def test_detect_contractor_accounts_accepts_root_account_list_shape() -> None:
     detected = detect_contractor_accounts(providers=providers)
 
     assert detected == [{"id": "10", "name": "CONTRACTORS", "account_type": "Expense"}]
+
+
+def test_detect_reviewable_expense_accounts_includes_non_contractor_expenses() -> None:
+    providers = _FakeProviders(
+        {
+            "QueryResponse": {
+                "Account": [
+                    {"Id": "1", "Name": "Contract Labor", "AccountType": "Expense"},
+                    {"Id": "2", "Name": "Office Expense", "AccountType": "Expense"},
+                    {"Id": "3", "Name": "COGS Labor", "AccountType": "Cost of Goods Sold"},
+                    {"Id": "4", "Name": "Business Checking", "AccountType": "Bank"},
+                ]
+            }
+        }
+    )
+
+    detected = detect_reviewable_expense_accounts(providers=providers)
+
+    assert detected == [
+        {"id": "3", "name": "COGS Labor", "account_type": "Cost of Goods Sold"},
+        {"id": "1", "name": "Contract Labor", "account_type": "Expense"},
+        {"id": "2", "name": "Office Expense", "account_type": "Expense"},
+    ]
 
 
 def test_gather_prompts_auto_confirms_detected_accounts_in_non_interactive() -> None:
@@ -250,9 +274,11 @@ def test_build_contractor_records_aggregates_vendor_payments_and_methods() -> No
     beta = records[1]
 
     assert alpha.total_paid == Decimal("550.00")
+    assert alpha.contractor_account_total == Decimal("550.00")
     assert alpha.card_processor_total == Decimal("200.00")
     assert alpha.non_card_total == Decimal("350.00")
     assert beta.total_paid == Decimal("125.00")
+    assert beta.contractor_account_total == Decimal("125.00")
     assert beta.card_processor_total == Decimal("0.00")
     assert beta.non_card_total == Decimal("125.00")
 
@@ -280,6 +306,7 @@ def test_build_contractor_records_detects_credit_card_account_type_as_card_payme
 
     assert len(records) == 1
     assert records[0].total_paid == Decimal("410.00")
+    assert records[0].contractor_account_total == Decimal("410.00")
     assert records[0].card_processor_total == Decimal("410.00")
     assert records[0].non_card_total == Decimal("0.00")
 
@@ -336,6 +363,7 @@ def test_build_contractor_records_includes_vendor_linked_journal_entries() -> No
     assert len(records) == 1
     assert records[0].display_name == "Linked JE Vendor"
     assert records[0].total_paid == Decimal("210.00")
+    assert records[0].contractor_account_total == Decimal("210.00")
 
 
 def test_build_contractor_records_keeps_credit_sign_vendor_as_positive_total() -> None:
@@ -362,9 +390,92 @@ def test_build_contractor_records_keeps_credit_sign_vendor_as_positive_total() -
     assert len(records) == 1
     assert records[0].display_name == "Ashley Kim"
     assert records[0].total_paid == Decimal("720.00")
+    assert records[0].contractor_account_total == Decimal("720.00")
     assert records[0].card_processor_total == Decimal("0.00")
     assert records[0].non_card_total == Decimal("720.00")
     assert records[0].requires_1099_review is True
+
+
+def test_build_contractor_records_rolls_up_other_expense_accounts_for_contractor_vendor() -> None:
+    rows = [
+        GeneralLedgerRow(
+            txn_id="txn-1",
+            date=date(2025, 1, 3),
+            transaction_type="Expense",
+            document_number="BILL-1",
+            account_name="Contract Labor",
+            account_type="Expense",
+            payee="Ice Tam",
+            memo="Zelle payment",
+            debit=Decimal("0.00"),
+            credit=Decimal("1000.00"),
+        ),
+        GeneralLedgerRow(
+            txn_id="txn-2",
+            date=date(2025, 5, 7),
+            transaction_type="Expense",
+            document_number="BILL-2",
+            account_name="Office expenses",
+            account_type="Expense",
+            payee="Ice Tam",
+            memo="Zelle payment",
+            debit=Decimal("0.00"),
+            credit=Decimal("275.00"),
+        ),
+    ]
+
+    records = build_contractor_records(
+        rows=rows,
+        selected_account_names={"Contract Labor"},
+        review_account_names={"Contract Labor", "Office expenses"},
+    )
+
+    assert len(records) == 1
+    assert records[0].display_name == "Ice Tam"
+    assert records[0].contractor_account_total == Decimal("1000.00")
+    assert records[0].total_paid == Decimal("1275.00")
+    assert records[0].source_accounts == ["Contract Labor", "Office expenses"]
+
+
+def test_build_contractor_records_does_not_roll_unknown_vendor_into_other_accounts() -> None:
+    rows = [
+        GeneralLedgerRow(
+            txn_id="txn-1",
+            date=date(2025, 1, 3),
+            transaction_type="Expense",
+            document_number="BILL-1",
+            account_name="Contract Labor",
+            account_type="Expense",
+            payee=None,
+            memo="contractor payment",
+            debit=Decimal("0.00"),
+            credit=Decimal("1000.00"),
+        ),
+        GeneralLedgerRow(
+            txn_id="txn-2",
+            date=date(2025, 5, 7),
+            transaction_type="Expense",
+            document_number="BILL-2",
+            account_name="Office expenses",
+            account_type="Expense",
+            payee=None,
+            memo="unrelated office purchase",
+            debit=Decimal("0.00"),
+            credit=Decimal("275.00"),
+        ),
+    ]
+
+    records = build_contractor_records(
+        rows=rows,
+        selected_account_names={"Contract Labor"},
+        review_account_names={"Contract Labor", "Office expenses"},
+    )
+
+    assert len(records) == 1
+    assert records[0].display_name == "Unknown Vendor"
+    assert records[0].contractor_account_total == Decimal("1000.00")
+    assert records[0].total_paid == Decimal("1000.00")
+    assert records[0].source_accounts == ["Contract Labor"]
 
 
 def test_build_contractor_records_clamps_negative_card_bucket_and_preserves_total() -> None:
@@ -401,9 +512,10 @@ def test_build_contractor_records_clamps_negative_card_bucket_and_preserves_tota
     )
 
     assert len(records) == 1
-    assert records[0].total_paid == Decimal("6633.47")
-    assert records[0].card_processor_total == Decimal("0.00")
-    assert records[0].non_card_total == Decimal("6633.47")
+    assert records[0].total_paid == Decimal("6755.41")
+    assert records[0].contractor_account_total == Decimal("6755.41")
+    assert records[0].card_processor_total == Decimal("60.97")
+    assert records[0].non_card_total == Decimal("6694.44")
 
 
 def test_sum_selected_account_balances_returns_absolute_net_total() -> None:
@@ -571,6 +683,7 @@ def test_contractor_summary_deliverable_generates_outputs_and_metadata(
     assert summary_rows[0]["total_paid"] == "850.00"
     assert summary_rows[0]["card_processor_total"] == "150.00"
     assert summary_rows[0]["non_card_total"] == "700.00"
+    assert summary_rows[0]["vendor_source_accounts"] == "Contract Labor"
     assert summary_rows[0]["flagged_for_1099_review"] == "true"
 
     flagged_csv_path = next(
@@ -585,7 +698,7 @@ def test_contractor_summary_deliverable_generates_outputs_and_metadata(
     metadata_path = tmp_path / "_meta" / "contractor_metadata.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     assert metadata["deliverable"] == "contractor"
-    assert metadata["schema_versions"] == {"csv": "2.0"}
+    assert metadata["schema_versions"] == {"csv": "3.0"}
     assert metadata["inputs"]["selected_account_ids"] == ["acc-1"]
     assert "input_fingerprint" in metadata
 
@@ -683,8 +796,9 @@ def test_contractor_summary_deliverable_sets_reconciliation_mismatch_flag(
     metadata_path = tmp_path / "_meta" / "contractor_metadata.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     assert metadata["inputs"]["has_reconciliation_mismatch"] is False
-    assert metadata["inputs"]["contractor_total_paid"] == "500.00"
-    assert metadata["inputs"]["selected_account_total"] == "500.00"
+    assert metadata["inputs"]["contractor_total_paid"] == "700.00"
+    assert metadata["inputs"]["contractor_selected_total"] == "700.00"
+    assert metadata["inputs"]["selected_account_total"] == "700.00"
 
 
 def test_contractor_summary_pipeline_flags_only_threshold_vendors(

@@ -74,7 +74,9 @@ class ContractorDataProvider(_AccountProviders, Protocol):
 class _ContractorTotals(TypedDict):
     display_name: str
     total_paid_raw: Decimal
+    contractor_account_total_raw: Decimal
     card_processor_total_raw: Decimal
+    source_accounts: set[str]
 
 
 class ContractorSummaryDeliverable:
@@ -108,13 +110,22 @@ class ContractorSummaryDeliverable:
         prompts: dict[str, Any],
     ) -> DeliverableResult:
         company_name = _extract_company_name(store.get_company_info())
-        detected_accounts = detect_contractor_accounts(providers=store)
+        accounts_payload = store.get_accounts()
+        detected_accounts = _detect_accounts(
+            payload=accounts_payload,
+            contractor_only=True,
+        )
+        review_accounts = _detect_accounts(
+            payload=accounts_payload,
+            contractor_only=False,
+        )
         selected_accounts = _resolve_selected_accounts(
             detected_accounts=detected_accounts,
             prompts=prompts,
             non_interactive=ctx.non_interactive,
         )
         selected_account_names = {account["name"] for account in selected_accounts}
+        review_account_names = {account["name"] for account in review_accounts}
 
         monthly_slices = fetch_general_ledger_monthly_slices(
             year=ctx.year,
@@ -124,17 +135,22 @@ class ContractorSummaryDeliverable:
         records = build_contractor_records(
             rows=gl_rows,
             selected_account_names=selected_account_names,
+            review_account_names=review_account_names,
         )
         contractor_total_paid = sum((record.total_paid for record in records), _ZERO).quantize(
             _CENT, rounding=ROUND_HALF_UP
         )
+        contractor_selected_total = sum(
+            (record.contractor_account_total for record in records),
+            _ZERO,
+        ).quantize(_CENT, rounding=ROUND_HALF_UP)
         selected_account_total = sum_selected_account_balances(
             rows=gl_rows,
             selected_account_names=selected_account_names,
         )
-        reconciliation_mismatch = (contractor_total_paid - selected_account_total).quantize(
-            _CENT, rounding=ROUND_HALF_UP
-        )
+        reconciliation_mismatch = (
+            contractor_selected_total - selected_account_total
+        ).quantize(_CENT, rounding=ROUND_HALF_UP)
         has_reconciliation_mismatch = reconciliation_mismatch != _ZERO
 
         warnings: list[str] = []
@@ -147,7 +163,7 @@ class ContractorSummaryDeliverable:
         if has_reconciliation_mismatch:
             warnings.append(
                 "Contractor reconciliation mismatch: "
-                f"contractor_total_paid={format(contractor_total_paid, 'f')} "
+                f"contractor_selected_total={format(contractor_selected_total, 'f')} "
                 f"selected_account_total={format(selected_account_total, 'f')} "
                 f"delta={format(reconciliation_mismatch, 'f')}"
             )
@@ -160,6 +176,7 @@ class ContractorSummaryDeliverable:
             monthly_slices=monthly_slices,
             gl_row_count=len(gl_rows),
             contractor_total_paid=contractor_total_paid,
+            contractor_selected_total=contractor_selected_total,
             selected_account_total=selected_account_total,
             has_reconciliation_mismatch=has_reconciliation_mismatch,
             warnings=warnings,
@@ -184,7 +201,15 @@ def should_flag_for_1099_review(*, non_card_total: Decimal) -> bool:
 
 def detect_contractor_accounts(*, providers: _AccountProviders) -> list[dict[str, str]]:
     """Identify contractor-related Expense/COGS accounts from QBO account payload."""
-    payload = providers.get_accounts()
+    return _detect_accounts(payload=providers.get_accounts(), contractor_only=True)
+
+
+def detect_reviewable_expense_accounts(*, providers: _AccountProviders) -> list[dict[str, str]]:
+    """Return all expense/COGS accounts that may contain contractor vendor spend."""
+    return _detect_accounts(payload=providers.get_accounts(), contractor_only=False)
+
+
+def _detect_accounts(*, payload: dict[str, Any], contractor_only: bool) -> list[dict[str, str]]:
     accounts = _extract_accounts(payload)
     detected: list[dict[str, str]] = []
     seen_ids: set[str] = set()
@@ -197,11 +222,10 @@ def detect_contractor_accounts(*, providers: _AccountProviders) -> list[dict[str
             continue
         if not _is_contractor_account_type(account_type):
             continue
-        if not _contains_contractor_keyword(account_name):
+        if contractor_only and not _contains_contractor_keyword(account_name):
             continue
         if account_id in seen_ids:
             continue
-
         seen_ids.add(account_id)
         detected.append(
             {
@@ -218,35 +242,60 @@ def build_contractor_records(
     *,
     rows: Sequence[GeneralLedgerRow],
     selected_account_names: set[str],
+    review_account_names: set[str] | None = None,
 ) -> list[ContractorRecord]:
     """Aggregate filtered GL rows into contractor records."""
     if not selected_account_names:
         return []
 
+    included_account_names = review_account_names or selected_account_names
     totals: dict[str, _ContractorTotals] = {}
+    contractor_vendor_ids: set[str] = set()
 
     for row in rows:
         account_name = row.account_name.strip()
-        if selected_account_names and not _account_matches(account_name, selected_account_names):
+        if not _account_matches(account_name, selected_account_names):
             continue
 
-        # Use signed amount so refunds/reversals offset payments.
-        # For expense/COGS accounts: debit = payment, credit = refund.
-        amount = (row.debit - row.credit).quantize(_CENT, rounding=ROUND_HALF_UP)
+        amount = row.signed_amount.copy_abs().quantize(_CENT, rounding=ROUND_HALF_UP)
         if amount == _ZERO:
             continue
 
         display_name = (row.payee or "").strip() or "Unknown Vendor"
         vendor_id = _vendor_id_for_name(display_name)
+        contractor_vendor_ids.add(vendor_id)
         bucket = totals.setdefault(
             vendor_id,
             {
                 "display_name": display_name,
                 "total_paid_raw": _ZERO,
+                "contractor_account_total_raw": _ZERO,
                 "card_processor_total_raw": _ZERO,
+                "source_accounts": set(),
             },
         )
+        bucket["contractor_account_total_raw"] += amount
+
+    for row in rows:
+        display_name = (row.payee or "").strip() or "Unknown Vendor"
+        vendor_id = _vendor_id_for_name(display_name)
+        if vendor_id not in contractor_vendor_ids:
+            continue
+
+        account_name = row.account_name.strip()
+        row_account_scope = (
+            selected_account_names if display_name == "Unknown Vendor" else included_account_names
+        )
+        if not _account_matches(account_name, row_account_scope):
+            continue
+
+        amount = row.signed_amount.copy_abs().quantize(_CENT, rounding=ROUND_HALF_UP)
+        if amount == _ZERO:
+            continue
+
+        bucket = totals[vendor_id]
         bucket["total_paid_raw"] += amount
+        bucket["source_accounts"].add(_leaf_account_name(account_name))
         if _is_card_payment_row(row):
             bucket["card_processor_total_raw"] += amount
 
@@ -256,14 +305,17 @@ def build_contractor_records(
         key=lambda item: item[1]["display_name"].lower(),
     ):
         total_paid_raw = bucket["total_paid_raw"].quantize(_CENT, rounding=ROUND_HALF_UP)
-        total_paid = abs(total_paid_raw).quantize(_CENT, rounding=ROUND_HALF_UP)
+        total_paid = total_paid_raw.copy_abs().quantize(_CENT, rounding=ROUND_HALF_UP)
+        contractor_account_total = bucket["contractor_account_total_raw"].quantize(
+            _CENT,
+            rounding=ROUND_HALF_UP,
+        )
 
         if total_paid == _ZERO:
             continue
 
         card_total_raw = bucket["card_processor_total_raw"].quantize(_CENT, rounding=ROUND_HALF_UP)
-        card_total_candidate = card_total_raw if total_paid_raw >= _ZERO else -card_total_raw
-        card_total = min(max(card_total_candidate, _ZERO), total_paid).quantize(
+        card_total = min(max(card_total_raw, _ZERO), total_paid).quantize(
             _CENT,
             rounding=ROUND_HALF_UP,
         )
@@ -277,10 +329,12 @@ def build_contractor_records(
                 display_name=bucket["display_name"],
                 tax_id_on_file=False,
                 total_paid=total_paid,
+                contractor_account_total=contractor_account_total,
                 card_processor_total=card_total,
                 non_card_total=non_card_total,
                 requires_1099_review=requires_review,
                 flags=flags,
+                source_accounts=sorted(bucket["source_accounts"]),
             )
         )
 
@@ -296,6 +350,7 @@ def write_contractor_output_artifacts(
     monthly_slices: Sequence[GeneralLedgerMonthlySlice],
     gl_row_count: int,
     contractor_total_paid: Decimal,
+    contractor_selected_total: Decimal,
     selected_account_total: Decimal,
     has_reconciliation_mismatch: bool,
     warnings: list[str],
@@ -374,6 +429,7 @@ def write_contractor_output_artifacts(
         gl_row_count=gl_row_count,
         record_count=len(records),
         contractor_total_paid=contractor_total_paid,
+        contractor_selected_total=contractor_selected_total,
         selected_account_total=selected_account_total,
         has_reconciliation_mismatch=has_reconciliation_mismatch,
         no_raw=ctx.no_raw,
@@ -410,6 +466,7 @@ def _write_contractor_csv(
             "card_processor_total",
             "non_card_total",
             "selected_source_accounts",
+            "vendor_source_accounts",
             "threshold",
             "flagged_for_1099_review",
             "review_note",
@@ -425,6 +482,7 @@ def _write_contractor_csv(
                 "card_processor_total": format(record.card_processor_total, "f"),
                 "non_card_total": format(record.non_card_total, "f"),
                 "selected_source_accounts": selected_source_accounts,
+                "vendor_source_accounts": "|".join(record.source_accounts),
                 "threshold": format(CONTRACTOR_1099_THRESHOLD, "f"),
                 "flagged_for_1099_review": str(record.requires_1099_review).lower(),
                 "review_note": _review_note(record),
@@ -570,10 +628,12 @@ def _build_raw_payload(
                 "display_name": record.display_name,
                 "tax_id_on_file": record.tax_id_on_file,
                 "total_paid": format(record.total_paid, "f"),
+                "contractor_account_total": format(record.contractor_account_total, "f"),
                 "card_processor_total": format(record.card_processor_total, "f"),
                 "non_card_total": format(record.non_card_total, "f"),
                 "requires_1099_review": record.requires_1099_review,
                 "flags": list(record.flags),
+                "source_accounts": list(record.source_accounts),
             }
             for record in records
         ],
@@ -589,6 +649,7 @@ def _build_metadata_inputs(
     gl_row_count: int,
     record_count: int,
     contractor_total_paid: Decimal,
+    contractor_selected_total: Decimal,
     selected_account_total: Decimal,
     has_reconciliation_mismatch: bool,
     no_raw: bool,
@@ -610,6 +671,7 @@ def _build_metadata_inputs(
         "gl_row_count": gl_row_count,
         "record_count": record_count,
         "contractor_total_paid": format(contractor_total_paid, "f"),
+        "contractor_selected_total": format(contractor_selected_total, "f"),
         "selected_account_total": format(selected_account_total, "f"),
         "has_reconciliation_mismatch": has_reconciliation_mismatch,
     }
@@ -620,22 +682,18 @@ def sum_selected_account_balances(
     rows: Sequence[GeneralLedgerRow],
     selected_account_names: set[str],
 ) -> Decimal:
-    """Return the selected-account total using vendor-level normalized nets."""
+    """Return the selected-account total using absolute matched row amounts."""
     if not selected_account_names:
         return _ZERO
 
-    totals_by_vendor: dict[str, Decimal] = {}
+    total = _ZERO
     for row in rows:
         if not _account_matches(row.account_name.strip(), selected_account_names):
             continue
-        amount = (row.debit - row.credit).quantize(_CENT, rounding=ROUND_HALF_UP)
+        amount = row.signed_amount.copy_abs().quantize(_CENT, rounding=ROUND_HALF_UP)
         if amount == _ZERO:
             continue
-        display_name = (row.payee or "").strip() or "Unknown Vendor"
-        vendor_id = _vendor_id_for_name(display_name)
-        totals_by_vendor[vendor_id] = totals_by_vendor.get(vendor_id, _ZERO) + amount
-
-    total = sum((abs(amount) for amount in totals_by_vendor.values()), _ZERO)
+        total += amount
     return total.quantize(_CENT, rounding=ROUND_HALF_UP)
 
 
@@ -753,6 +811,10 @@ def _contains_contractor_keyword(account_name: str) -> bool:
 def _vendor_id_for_name(display_name: str) -> str:
     normalized = display_name.strip().lower()
     return hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:12]
+
+
+def _leaf_account_name(account_name: str) -> str:
+    return account_name.rsplit(":", 1)[-1].strip()
 
 
 def _is_card_payment_row(row: GeneralLedgerRow) -> bool:
