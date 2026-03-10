@@ -17,6 +17,7 @@ from cpapacket.deliverables.pnl import PnlDeliverable
 class _HttpQboClient:
     def __init__(self, client: httpx.Client) -> None:
         self._client = client
+        self._config = type("Config", (), {"realm_id": "test-realm"})()
 
     def request(
         self,
@@ -90,7 +91,7 @@ def _run_deliverable_with_fixture(
             route = router.get("https://api.example.test/reports/ProfitAndLoss").mock(
                 return_value=httpx.Response(200, json=fixture)
             )
-            router.get("https://api.example.test/companyinfo").mock(
+            router.get("https://api.example.test/companyinfo/test-realm").mock(
                 return_value=httpx.Response(200, json={"CompanyInfo": {"CompanyName": "Acme LLC"}})
             )
 

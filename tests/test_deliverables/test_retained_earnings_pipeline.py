@@ -97,10 +97,10 @@ def test_retained_earnings_pipeline_balanced_uses_respx_and_cache(
     store = SessionDataStore(cache_dir=cache_dir)
 
     def balance_sheet_response(request: httpx.Request) -> httpx.Response:
-        as_of = request.url.params.get("as_of_date")
-        if as_of == "2024-12-31":
+        end_date = request.url.params.get("end_date")
+        if end_date == "2024-12-31":
             payload = _balance_sheet_payload("100.00")
-        elif as_of == "2025-12-31":
+        elif end_date == "2025-12-31":
             payload = _balance_sheet_payload("325.00")
         else:  # pragma: no cover
             payload = {"Rows": {"Row": []}}
@@ -174,10 +174,10 @@ def test_retained_earnings_pipeline_mismatch_sets_structural_flags(
     store = SessionDataStore(cache_dir=cache_dir)
 
     def balance_sheet_response(request: httpx.Request) -> httpx.Response:
-        as_of = request.url.params.get("as_of_date")
-        if as_of == "2024-12-31":
+        end_date = request.url.params.get("end_date")
+        if end_date == "2024-12-31":
             payload = _balance_sheet_payload("100.00")
-        elif as_of == "2025-12-31":
+        elif end_date == "2025-12-31":
             payload = _balance_sheet_payload("-10.00")
         else:  # pragma: no cover
             payload = {"Rows": {"Row": []}}

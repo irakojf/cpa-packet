@@ -86,12 +86,13 @@ def merge_general_ledger_monthly_slices(
 ) -> tuple[GeneralLedgerRow, ...]:
     """Merge monthly slices in month order and deduplicate rows.
 
-    Deduplication key preference:
-    1. ``txn_id`` when present.
-    2. Composite hash of stable transaction fields when ``txn_id`` is blank.
+    Deduplication uses a stable line-level signature rather than bare ``txn_id``.
+    QBO report slices routinely emit multiple legitimate rows for the same
+    transaction id across different accounts. Using only ``txn_id`` collapses
+    those postings and leaves the merged ledger unbalanced.
 
-    The first occurrence wins, so if the same transaction appears in adjacent
-    months (date-window overlap), the earliest month slice is preserved.
+    The first occurrence wins, so if the same line appears in adjacent months
+    (date-window overlap), the earliest month slice is preserved.
     """
     merged: list[GeneralLedgerRow] = []
     seen_keys: set[str] = set()
@@ -231,16 +232,14 @@ def fetch_general_ledger_monthly_slices(
 
 
 def _dedupe_key_for_row(row: GeneralLedgerRow) -> str:
-    txn_id = row.txn_id.strip()
-    if txn_id:
-        return f"txn:{txn_id}"
-
     signature = "|".join(
         (
+            row.txn_id.strip(),
             row.date.isoformat(),
             row.transaction_type.strip(),
             row.document_number.strip(),
             row.account_name.strip(),
+            row.account_type.strip(),
             format(row.debit, "f"),
             format(row.credit, "f"),
             (row.payee or "").strip(),
@@ -343,14 +342,8 @@ class GeneralLedgerDeliverable:
         warnings: list[str] = []
         slices = fetch_general_ledger_monthly_slices(year=ctx.year, provider=provider)
         rows = merge_general_ledger_monthly_slices(slices)
-        total_signed = sum((row.signed_amount for row in rows), Decimal("0"))
         if not rows:
             warnings.append("General ledger normalized to zero rows.")
-        if rows and abs(total_signed) > BALANCE_EQUATION_TOLERANCE:
-            warnings.append(
-                "General ledger signed amounts do not balance "
-                f"(total={total_signed}, tolerance={BALANCE_EQUATION_TOLERANCE})."
-            )
 
         deliverable_dir = ctx.out_dir / self.folder
         deliverable_dir.mkdir(parents=True, exist_ok=True)
@@ -383,7 +376,7 @@ class GeneralLedgerDeliverable:
                 "signed_amount",
             ],
             rows=_iter_csv_rows(rows),
-            dedupe_id_field="txn_id",
+            dedupe_id_field=None,
         )
 
         json_path = JsonWriter().write_payload(

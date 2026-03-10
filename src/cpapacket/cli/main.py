@@ -298,6 +298,7 @@ def cli(
         verbose=run_context.verbose,
         quiet=run_context.quiet,
         plain=run_context.plain,
+        log_dir=run_context.out_dir / "_meta" / "private",
     )
 
     ctx.ensure_object(dict)

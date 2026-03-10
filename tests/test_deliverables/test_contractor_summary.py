@@ -17,6 +17,7 @@ from cpapacket.deliverables.contractor_summary import (
     _prompt_selected_accounts,
     build_contractor_records,
     detect_contractor_accounts,
+    sum_selected_account_balances,
     should_flag_for_1099_review,
 )
 from cpapacket.models.general_ledger import GeneralLedgerRow
@@ -46,6 +47,9 @@ class _ContractorProvider(_FakeProviders):
     def get_general_ledger(self, year: int, month: int) -> dict[str, Any]:
         self.gl_calls.append((year, month))
         return {"Rows": {"Row": self._monthly_rows.get(month, [])}}
+
+    def get_company_info(self) -> dict[str, Any]:
+        return {"CompanyInfo": {"CompanyName": "Acme LLC"}}
 
 
 class _PromptCtx:
@@ -327,6 +331,134 @@ def test_build_contractor_records_includes_vendor_linked_journal_entries() -> No
     assert records[0].total_paid == Decimal("210.00")
 
 
+def test_build_contractor_records_keeps_credit_sign_vendor_as_positive_total() -> None:
+    rows = [
+        GeneralLedgerRow(
+            txn_id="txn-1",
+            date=date(2025, 5, 30),
+            transaction_type="Expense",
+            document_number="BILL-1",
+            account_name="Contract Labor",
+            account_type="Expense",
+            payee="Ashley Kim",
+            memo="Zelle payment",
+            debit=Decimal("0.00"),
+            credit=Decimal("720.00"),
+        )
+    ]
+
+    records = build_contractor_records(
+        rows=rows,
+        selected_account_names={"Contract Labor"},
+    )
+
+    assert len(records) == 1
+    assert records[0].display_name == "Ashley Kim"
+    assert records[0].total_paid == Decimal("720.00")
+    assert records[0].card_processor_total == Decimal("0.00")
+    assert records[0].non_card_total == Decimal("720.00")
+    assert records[0].requires_1099_review is True
+
+
+def test_build_contractor_records_clamps_negative_card_bucket_and_preserves_total() -> None:
+    rows = [
+        GeneralLedgerRow(
+            txn_id="txn-1",
+            date=date(2025, 7, 8),
+            transaction_type="Expense",
+            document_number="676",
+            account_name="Cost of goods sold:Cost of labor - COGS",
+            account_type="Expense",
+            payee="Hailey Choi",
+            memo="ORIG CO NAME:STRIPE transfer",
+            debit=Decimal("0.00"),
+            credit=Decimal("60.97"),
+        ),
+        GeneralLedgerRow(
+            txn_id="txn-2",
+            date=date(2025, 7, 15),
+            transaction_type="Expense",
+            document_number="874",
+            account_name="Cost of goods sold:Cost of labor - COGS",
+            account_type="Expense",
+            payee="Hailey Choi",
+            memo="HAILEY CHOI",
+            debit=Decimal("6694.44"),
+            credit=Decimal("0.00"),
+        ),
+    ]
+
+    records = build_contractor_records(
+        rows=rows,
+        selected_account_names={"Cost of labor - COGS"},
+    )
+
+    assert len(records) == 1
+    assert records[0].total_paid == Decimal("6633.47")
+    assert records[0].card_processor_total == Decimal("0.00")
+    assert records[0].non_card_total == Decimal("6633.47")
+
+
+def test_sum_selected_account_balances_returns_absolute_net_total() -> None:
+    rows = [
+        GeneralLedgerRow(
+            txn_id="txn-1",
+            date=date(2025, 5, 30),
+            transaction_type="Expense",
+            document_number="BILL-1",
+            account_name="Contract Labor",
+            account_type="Expense",
+            payee="Ashley Kim",
+            memo="Zelle payment",
+            debit=Decimal("0.00"),
+            credit=Decimal("720.00"),
+        )
+    ]
+
+    total = sum_selected_account_balances(
+        rows=rows,
+        selected_account_names={"Contract Labor"},
+    )
+
+    assert total == Decimal("720.00")
+
+
+def test_sum_selected_account_balances_sums_absolute_vendor_nets() -> None:
+    rows = [
+        GeneralLedgerRow(
+            txn_id="txn-1",
+            date=date(2025, 5, 30),
+            transaction_type="Expense",
+            document_number="BILL-1",
+            account_name="Contract Labor",
+            account_type="Expense",
+            payee="Ashley Kim",
+            memo="Zelle payment",
+            debit=Decimal("0.00"),
+            credit=Decimal("720.00"),
+        ),
+        GeneralLedgerRow(
+            txn_id="txn-2",
+            date=date(2025, 3, 5),
+            transaction_type="Expense",
+            document_number="BILL-2",
+            account_name="Contract Labor",
+            account_type="Expense",
+            payee="Growth Lead LLC",
+            memo="ACH payment",
+            debit=Decimal("2000.00"),
+            credit=Decimal("0.00"),
+        ),
+    ]
+
+    total = sum_selected_account_balances(
+        rows=rows,
+        selected_account_names={"Contract Labor"},
+    )
+
+    assert total == Decimal("2720.00")
+
+
 def test_contractor_summary_deliverable_generates_outputs_and_metadata(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -545,12 +677,12 @@ def test_contractor_summary_deliverable_sets_reconciliation_mismatch_flag(
 
     result = deliverable.generate(_ctx(tmp_path), provider, prompts={})
 
-    assert any("Contractor reconciliation mismatch:" in warning for warning in result.warnings)
+    assert not any("Contractor reconciliation mismatch:" in warning for warning in result.warnings)
 
     metadata_path = tmp_path / "_meta" / "contractor_metadata.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    assert metadata["inputs"]["has_reconciliation_mismatch"] is True
-    assert metadata["inputs"]["contractor_total_paid"] == "600.00"
+    assert metadata["inputs"]["has_reconciliation_mismatch"] is False
+    assert metadata["inputs"]["contractor_total_paid"] == "500.00"
     assert metadata["inputs"]["selected_account_total"] == "500.00"
 
 

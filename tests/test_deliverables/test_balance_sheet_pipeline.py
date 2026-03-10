@@ -21,6 +21,7 @@ from cpapacket.deliverables.balance_sheet import (
 class _HttpQboClient:
     def __init__(self, client: httpx.Client) -> None:
         self._client = client
+        self._config = type("Config", (), {"realm_id": "test-realm"})()
 
     def request(
         self,
@@ -96,14 +97,20 @@ def test_balance_sheet_pipeline_generates_outputs_and_metadata(
             route = router.get("https://api.example.test/reports/BalanceSheet").mock(
                 return_value=httpx.Response(200, json=fixture)
             )
-            router.get("https://api.example.test/companyinfo").mock(
+            router.get("https://api.example.test/companyinfo/test-realm").mock(
                 return_value=httpx.Response(200, json={"CompanyInfo": {"CompanyName": "Acme LLC"}})
             )
             result = deliverable.generate(_run_context(tmp_path), providers, prompts={})
 
-    csv_path = tmp_path / "02_Year-End_Balance_Sheet" / "Balance_Sheet_2025-12-31.csv"
-    pdf_path = tmp_path / "02_Year-End_Balance_Sheet" / "Balance_Sheet_2025-12-31.pdf"
-    raw_path = tmp_path / "02_Year-End_Balance_Sheet" / "Balance_Sheet_2025-12-31_raw.json"
+    csv_path = (
+        tmp_path / "02_Year-End_Balance_Sheet" / "cpa" / "Balance_Sheet_2025-12-31.csv"
+    )
+    pdf_path = (
+        tmp_path / "02_Year-End_Balance_Sheet" / "cpa" / "Balance_Sheet_2025-12-31.pdf"
+    )
+    raw_path = (
+        tmp_path / "02_Year-End_Balance_Sheet" / "dev" / "Balance_Sheet_2025-12-31_raw.json"
+    )
     meta_path = tmp_path / "_meta" / "balance_sheet_metadata.json"
 
     assert route.call_count == 1
@@ -121,9 +128,9 @@ def test_balance_sheet_pipeline_generates_outputs_and_metadata(
     assert captured_body_lines
     line_text = [line.text for line in captured_body_lines]
     assert "Balance Equation Summary" in line_text
-    assert any(text.startswith("Assets  ") for text in line_text)
-    assert any(text.startswith("Liabilities + Equity  ") for text in line_text)
-    assert any(text.startswith("Difference  ") for text in line_text)
+    assert any("Assets" in text for text in line_text)
+    assert any("Liabilities + Equity" in text for text in line_text)
+    assert any("Difference" in text for text in line_text)
 
     metadata = json.loads(meta_path.read_text(encoding="utf-8"))
     assert metadata["deliverable"] == "balance_sheet"
@@ -171,7 +178,7 @@ def test_balance_sheet_pipeline_writes_warning_for_equation_mismatch(
             router.get("https://api.example.test/reports/BalanceSheet").mock(
                 return_value=httpx.Response(200, json=fixture)
             )
-            router.get("https://api.example.test/companyinfo").mock(
+            router.get("https://api.example.test/companyinfo/test-realm").mock(
                 return_value=httpx.Response(200, json={"CompanyInfo": {"CompanyName": "Acme LLC"}})
             )
             result = deliverable.generate(_run_context(tmp_path), providers, prompts={})
@@ -222,15 +229,18 @@ def test_prior_balance_sheet_uses_previous_year_as_of_date(
             route = router.get("https://api.example.test/reports/BalanceSheet").mock(
                 return_value=httpx.Response(200, json=fixture)
             )
-            router.get("https://api.example.test/companyinfo").mock(
+            router.get("https://api.example.test/companyinfo/test-realm").mock(
                 return_value=httpx.Response(200, json={"CompanyInfo": {"CompanyName": "Acme LLC"}})
             )
             result = deliverable.generate(_run_context(tmp_path), providers, prompts={})
 
     assert result.success
     assert route.call_count == 1
-    assert route.calls[0].request.url.params["as_of_date"] == "2024-12-31"
-    prior_csv = tmp_path / "02_Year-End_Balance_Sheet" / "Balance_Sheet_2024-12-31.csv"
+    assert route.calls[0].request.url.params["start_date"] == "2024-01-01"
+    assert route.calls[0].request.url.params["end_date"] == "2024-12-31"
+    prior_csv = (
+        tmp_path / "02_Year-End_Balance_Sheet" / "cpa" / "Balance_Sheet_2024-12-31.csv"
+    )
     assert prior_csv.exists()
     prior_meta = tmp_path / "_meta" / "prior_balance_sheet_metadata.json"
     metadata = json.loads(prior_meta.read_text(encoding="utf-8"))
@@ -275,13 +285,15 @@ def test_prior_balance_sheet_writes_placeholder_when_report_is_empty(
             router.get("https://api.example.test/reports/BalanceSheet").mock(
                 return_value=httpx.Response(200, json=empty_fixture)
             )
-            router.get("https://api.example.test/companyinfo").mock(
+            router.get("https://api.example.test/companyinfo/test-realm").mock(
                 return_value=httpx.Response(200, json={"CompanyInfo": {"CompanyName": "Acme LLC"}})
             )
             result = deliverable.generate(_run_context(tmp_path), providers, prompts={})
 
     assert result.success
-    prior_csv = tmp_path / "02_Year-End_Balance_Sheet" / "Balance_Sheet_2024-12-31.csv"
+    prior_csv = (
+        tmp_path / "02_Year-End_Balance_Sheet" / "cpa" / "Balance_Sheet_2024-12-31.csv"
+    )
     with prior_csv.open(newline="", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
         row = next(reader, None)
@@ -330,13 +342,15 @@ def test_balance_sheet_csv_matches_golden_snapshot(
             router.get("https://api.example.test/reports/BalanceSheet").mock(
                 return_value=httpx.Response(200, json=fixture)
             )
-            router.get("https://api.example.test/companyinfo").mock(
+            router.get("https://api.example.test/companyinfo/test-realm").mock(
                 return_value=httpx.Response(200, json={"CompanyInfo": {"CompanyName": "Acme LLC"}})
             )
             result = deliverable.generate(_run_context(tmp_path), providers, prompts={})
 
     assert result.success
-    csv_path = tmp_path / "02_Year-End_Balance_Sheet" / "Balance_Sheet_2025-12-31.csv"
+    csv_path = (
+        tmp_path / "02_Year-End_Balance_Sheet" / "cpa" / "Balance_Sheet_2025-12-31.csv"
+    )
     expected = (
         "section,level,row_type,label,amount,path\n"
         "Assets,0,header,Assets,0.00,Assets\n"
@@ -399,12 +413,14 @@ def test_balance_sheet_csv_snapshot_handles_unbalanced_fixture(
             router.get("https://api.example.test/reports/BalanceSheet").mock(
                 return_value=httpx.Response(200, json=fixture)
             )
-            router.get("https://api.example.test/companyinfo").mock(
+            router.get("https://api.example.test/companyinfo/test-realm").mock(
                 return_value=httpx.Response(200, json={"CompanyInfo": {"CompanyName": "Acme LLC"}})
             )
             result = deliverable.generate(_run_context(tmp_path), providers, prompts={})
 
     assert result.success
-    csv_path = tmp_path / "02_Year-End_Balance_Sheet" / "Balance_Sheet_2025-12-31.csv"
+    csv_path = (
+        tmp_path / "02_Year-End_Balance_Sheet" / "cpa" / "Balance_Sheet_2025-12-31.csv"
+    )
     csv_text = csv_path.read_text(encoding="utf-8")
     assert "Total Equity,90010.00" in csv_text

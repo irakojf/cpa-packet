@@ -31,6 +31,7 @@ class _FakeHttpStatusError(RuntimeError):
 class _FakeQboClient:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
+        self._config = type("Config", (), {"realm_id": "test-realm"})()
 
     def request(
         self,
@@ -125,7 +126,8 @@ def test_get_balance_sheet_accepts_date_object() -> None:
     payload = providers.get_balance_sheet(2025, date(2025, 12, 31))
 
     assert payload["endpoint"] == "/reports/BalanceSheet"
-    assert payload["params"]["as_of_date"] == "2025-12-31"
+    assert payload["params"]["start_date"] == "2025-01-01"
+    assert payload["params"]["end_date"] == "2025-12-31"
 
 
 def test_get_payroll_runs_returns_empty_when_gusto_absent() -> None:
@@ -170,7 +172,7 @@ def test_get_accounts_and_company_info_use_expected_endpoints() -> None:
 
     assert accounts["endpoint"] == "/query"
     assert accounts["params"]["query"] == "select * from Account"
-    assert company["endpoint"] == "/companyinfo"
+    assert company["endpoint"] == "/companyinfo/test-realm"
     assert company["params"] == {}
 
 
@@ -206,7 +208,7 @@ def test_provider_layer_generates_cache_keys(monkeypatch: pytest.MonkeyPatch) ->
     assert calls[0]["source"] == "qbo"
     assert calls[0]["endpoint"] == "/reports/ProfitAndLoss"
     assert calls[0]["schema"] == "qbo.pnl.v1"
-    assert calls[1]["endpoint"] == "/companyinfo"
+    assert calls[1]["endpoint"] == "/companyinfo/test-realm"
     assert calls[1]["schema"] == "qbo.company_info.v1"
 
 

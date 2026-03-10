@@ -107,7 +107,10 @@ class DataProviders:
 
     def get_balance_sheet(self, year: int, as_of: date | str) -> dict[str, Any]:
         as_of_date = as_of if isinstance(as_of, str) else as_of.isoformat()
-        params = {"as_of_date": as_of_date}
+        params = {
+            "start_date": f"{year}-01-01",
+            "end_date": as_of_date,
+        }
         return self._cached_qbo_json(
             endpoint="/reports/BalanceSheet", params=params, schema="qbo.balance_sheet.v1"
         )

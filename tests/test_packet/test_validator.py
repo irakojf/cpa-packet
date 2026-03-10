@@ -108,6 +108,61 @@ def test_validate_packet_deliverables_incomplete_when_some_artifacts_missing(
     assert any(pattern.endswith(r"pnl\.pdf$") for pattern in record.missing_patterns)
 
 
+def test_validate_packet_deliverables_normalizes_absolute_metadata_artifacts(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "packet"
+    folder = root / "01_Year-End_Profit_and_Loss"
+    folder.mkdir(parents=True, exist_ok=True)
+    csv_path = folder / "pnl.csv"
+    csv_path.write_text("header\n", encoding="utf-8")
+    _write_metadata(root, key="pnl", artifacts=[str(csv_path)])
+
+    result = validate_packet_deliverables(
+        packet_root=root,
+        registry=_registry(_FakeDeliverable(key="pnl", folder="01_Year-End_Profit_and_Loss")),
+    )
+
+    record = result.records[0]
+    assert record.status == "present"
+    assert record.found_files == ("01_Year-End_Profit_and_Loss/pnl.csv",)
+
+
+def test_validate_packet_deliverables_uses_compatibility_metadata_without_inputs(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "packet"
+    folder = root / "01_Year-End_Profit_and_Loss"
+    folder.mkdir(parents=True, exist_ok=True)
+    csv_path = folder / "pnl.csv"
+    csv_path.write_text("header\n", encoding="utf-8")
+    metadata_path = root / "_meta" / "pnl_metadata.json"
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
+    metadata_path.write_text(
+        dedent(
+            f"""\
+            {{
+              "deliverable": "pnl",
+              "input_fingerprint": "abc123",
+              "schema_versions": {{"csv": "1.0"}},
+              "artifacts": ["{csv_path.as_posix()}"],
+              "warnings": []
+            }}
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    result = validate_packet_deliverables(
+        packet_root=root,
+        registry=_registry(_FakeDeliverable(key="pnl", folder="01_Year-End_Profit_and_Loss")),
+    )
+
+    record = result.records[0]
+    assert record.status == "present"
+    assert record.found_files == ("01_Year-End_Profit_and_Loss/pnl.csv",)
+
+
 def test_validate_packet_deliverables_missing_when_no_metadata_or_files(
     tmp_path: Path,
 ) -> None:

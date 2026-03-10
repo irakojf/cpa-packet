@@ -18,6 +18,7 @@ _GOLDEN_CSV_PATH = Path("tests/fixtures/qbo/general_ledger_2025_golden.csv")
 class _HttpQboClient:
     def __init__(self, client: httpx.Client) -> None:
         self._client = client
+        self._config = type("Config", (), {"realm_id": "test-realm"})()
 
     def request(
         self,

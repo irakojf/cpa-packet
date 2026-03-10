@@ -29,6 +29,7 @@ class _Provider:
 class _HttpQboClient:
     def __init__(self, client: httpx.Client) -> None:
         self._client = client
+        self._config = type("Config", (), {"realm_id": "test-realm"})()
 
     def request(
         self,

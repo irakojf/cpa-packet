@@ -532,6 +532,7 @@ def _write_metadata(
     payload = {
         "deliverable": key,
         "input_fingerprint": fingerprint,
+        "inputs": metadata_inputs,
         "schema_versions": SCHEMA_VERSIONS.get(key, {}),
         "artifacts": [str(item) for item in artifacts],
         "warnings": warnings,

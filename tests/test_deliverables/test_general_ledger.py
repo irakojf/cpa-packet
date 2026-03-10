@@ -259,7 +259,7 @@ def _row_with_missing_txn_id(
     )
 
 
-def test_merge_general_ledger_monthly_slices_dedupes_by_txn_id() -> None:
+def test_merge_general_ledger_monthly_slices_dedupes_identical_lines_across_months() -> None:
     jan = GeneralLedgerMonthlySlice(month=1, payload={"month": 1})
     feb = GeneralLedgerMonthlySlice(month=2, payload={"month": 2})
 
@@ -269,12 +269,33 @@ def test_merge_general_ledger_monthly_slices_dedupes_by_txn_id() -> None:
     }
 
     def _normalizer(payload: dict[str, Any]) -> list[GeneralLedgerRow]:
-        return normalized_by_month[payload["month"]]
+        rows = normalized_by_month[payload["month"]]
+        if payload["month"] == 2:
+            return [
+                _row(txn_id="txn-2", doc_num="JAN-2"),
+                rows[1],
+            ]
+        return rows
 
     merged = merge_general_ledger_monthly_slices((feb, jan), normalizer=_normalizer)
 
     assert [row.txn_id for row in merged] == ["txn-1", "txn-2", "txn-3"]
     assert [row.document_number for row in merged] == ["JAN-1", "JAN-2", "FEB-3"]
+
+
+def test_merge_general_ledger_monthly_slices_keeps_distinct_lines_with_same_txn_id() -> None:
+    jan = GeneralLedgerMonthlySlice(month=1, payload={"month": 1})
+
+    def _normalizer(_payload: dict[str, Any]) -> list[GeneralLedgerRow]:
+        return [
+            _row(txn_id="txn-1", doc_num="DOC-1", account_name="Cash"),
+            _row(txn_id="txn-1", doc_num="DOC-1", account_name="Contract Labor"),
+        ]
+
+    merged = merge_general_ledger_monthly_slices((jan,), normalizer=_normalizer)
+
+    assert len(merged) == 2
+    assert [row.account_name for row in merged] == ["Cash", "Contract Labor"]
 
 
 def test_merge_general_ledger_monthly_slices_uses_composite_hash_when_txn_id_blank() -> None:
@@ -450,9 +471,6 @@ def test_general_ledger_streaming_csv_matches_golden_snapshot(tmp_path: Path) ->
             )
         )
 
-    # Include a duplicate row in source data and verify dedupe keeps golden output stable.
-    duplicated_rows = tuple(rows + [rows[0]])
-
     output_path = tmp_path / "General_Ledger_2025.csv"
     CsvWriter().write_rows_streaming(
         output_path,
@@ -469,8 +487,8 @@ def test_general_ledger_streaming_csv_matches_golden_snapshot(tmp_path: Path) ->
             "credit",
             "signed_amount",
         ],
-        rows=_iter_csv_rows(duplicated_rows),
-        dedupe_id_field="txn_id",
+        rows=_iter_csv_rows(tuple(rows)),
+        dedupe_id_field=None,
     )
 
     assert output_path.name == "General_Ledger_2025.csv"

@@ -218,6 +218,37 @@ def test_extract_distribution_total_detects_dividend_and_memo_signals() -> None:
     assert extract_distribution_total(rows) == Decimal("800.00")
 
 
+def test_extract_distribution_total_normalizes_credit_sign_convention() -> None:
+    rows = [
+        GeneralLedgerRow(
+            txn_id="DIV-CR-1",
+            date=date(2025, 5, 1),
+            transaction_type="Expense",
+            document_number="DIV-CR-1",
+            account_name="Shareholder Distributions",
+            account_type="Equity",
+            payee="Owner",
+            memo="distribution",
+            debit=Decimal("0"),
+            credit=Decimal("500"),
+        ),
+        GeneralLedgerRow(
+            txn_id="DIV-CR-2",
+            date=date(2025, 5, 2),
+            transaction_type="Expense",
+            document_number="DIV-CR-2",
+            account_name="Shareholder Distributions",
+            account_type="Equity",
+            payee="Owner",
+            memo="distribution",
+            debit=Decimal("0"),
+            credit=Decimal("300"),
+        ),
+    ]
+
+    assert extract_distribution_total(rows) == Decimal("800.00")
+
+
 def test_extract_distribution_total_excludes_non_distribution_equity_accounts() -> None:
     rows = [
         GeneralLedgerRow(

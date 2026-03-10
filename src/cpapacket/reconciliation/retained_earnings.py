@@ -165,7 +165,7 @@ def extract_distribution_total(gl_rows: list[GeneralLedgerRow]) -> Decimal:
         if not _is_distribution_equity_row(row):
             continue
         total += row.signed_amount
-    return total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return total.copy_abs().quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
 def evaluate_re_structural_flags(

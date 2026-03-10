@@ -66,9 +66,8 @@ class ContractorDataProvider(_AccountProviders, Protocol):
 
 class _ContractorTotals(TypedDict):
     display_name: str
-    total_paid: Decimal
-    card_processor_total: Decimal
-    non_card_total: Decimal
+    total_paid_raw: Decimal
+    card_processor_total_raw: Decimal
 
 
 class ContractorSummaryDeliverable:
@@ -224,8 +223,10 @@ def build_contractor_records(
         if selected_account_names and not _account_matches(account_name, selected_account_names):
             continue
 
-        amount = abs(row.debit - row.credit).quantize(_CENT, rounding=ROUND_HALF_UP)
-        if amount <= _ZERO:
+        # Use signed amount so refunds/reversals offset payments.
+        # For expense/COGS accounts: debit = payment, credit = refund.
+        amount = (row.debit - row.credit).quantize(_CENT, rounding=ROUND_HALF_UP)
+        if amount == _ZERO:
             continue
 
         display_name = (row.payee or "").strip() or "Unknown Vendor"
@@ -234,23 +235,35 @@ def build_contractor_records(
             vendor_id,
             {
                 "display_name": display_name,
-                "total_paid": _ZERO,
-                "card_processor_total": _ZERO,
-                "non_card_total": _ZERO,
+                "total_paid_raw": _ZERO,
+                "card_processor_total_raw": _ZERO,
             },
         )
-        bucket["total_paid"] += amount
+        bucket["total_paid_raw"] += amount
         if _is_card_payment_row(row):
-            bucket["card_processor_total"] += amount
-        else:
-            bucket["non_card_total"] += amount
+            bucket["card_processor_total_raw"] += amount
 
     records: list[ContractorRecord] = []
     for vendor_id, bucket in sorted(
         totals.items(),
         key=lambda item: item[1]["display_name"].lower(),
     ):
-        non_card_total = bucket["non_card_total"].quantize(_CENT, rounding=ROUND_HALF_UP)
+        total_paid_raw = bucket["total_paid_raw"].quantize(_CENT, rounding=ROUND_HALF_UP)
+        total_paid = abs(total_paid_raw).quantize(_CENT, rounding=ROUND_HALF_UP)
+
+        if total_paid == _ZERO:
+            continue
+
+        card_total_raw = bucket["card_processor_total_raw"].quantize(
+            _CENT, rounding=ROUND_HALF_UP
+        )
+        card_total_candidate = card_total_raw if total_paid_raw >= _ZERO else -card_total_raw
+        card_total = min(max(card_total_candidate, _ZERO), total_paid).quantize(
+            _CENT,
+            rounding=ROUND_HALF_UP,
+        )
+        non_card_total = (total_paid - card_total).quantize(_CENT, rounding=ROUND_HALF_UP)
+
         requires_review = should_flag_for_1099_review(non_card_total=non_card_total)
         flags = ["requires_1099_review"] if requires_review else []
         records.append(
@@ -258,10 +271,8 @@ def build_contractor_records(
                 vendor_id=vendor_id,
                 display_name=bucket["display_name"],
                 tax_id_on_file=False,
-                total_paid=bucket["total_paid"].quantize(_CENT, rounding=ROUND_HALF_UP),
-                card_processor_total=bucket["card_processor_total"].quantize(
-                    _CENT, rounding=ROUND_HALF_UP
-                ),
+                total_paid=total_paid,
+                card_processor_total=card_total,
                 non_card_total=non_card_total,
                 requires_1099_review=requires_review,
                 flags=flags,
@@ -562,14 +573,22 @@ def sum_selected_account_balances(
     rows: Sequence[GeneralLedgerRow],
     selected_account_names: set[str],
 ) -> Decimal:
-    """Return the net selected-account balance from GL rows."""
+    """Return the selected-account total using vendor-level normalized nets."""
     if not selected_account_names:
         return _ZERO
-    total = _ZERO
+
+    totals_by_vendor: dict[str, Decimal] = {}
     for row in rows:
         if not _account_matches(row.account_name.strip(), selected_account_names):
             continue
-        total += abs(row.debit - row.credit)
+        amount = (row.debit - row.credit).quantize(_CENT, rounding=ROUND_HALF_UP)
+        if amount == _ZERO:
+            continue
+        display_name = (row.payee or "").strip() or "Unknown Vendor"
+        vendor_id = _vendor_id_for_name(display_name)
+        totals_by_vendor[vendor_id] = totals_by_vendor.get(vendor_id, _ZERO) + amount
+
+    total = sum((abs(amount) for amount in totals_by_vendor.values()), _ZERO)
     return total.quantize(_CENT, rounding=ROUND_HALF_UP)
 
 

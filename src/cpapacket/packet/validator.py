@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import IO, Literal, cast
+from typing import IO, Any, Literal, cast
 
 from cpapacket.core.filesystem import atomic_write
 from cpapacket.core.metadata import DeliverableMetadata, read_deliverable_metadata
@@ -88,6 +90,7 @@ def validate_packet_deliverables(
         expected_patterns = _expected_patterns(
             deliverable=deliverable,
             metadata_artifacts=metadata.artifacts if metadata is not None else None,
+            packet_root=root,
         )
 
         found_files = _match_patterns(
@@ -181,7 +184,12 @@ def _read_metadata_if_present(*, root: Path, deliverable_key: str) -> Deliverabl
             try:
                 return read_deliverable_metadata(path)
             except Exception:
-                continue
+                compatibility = _read_metadata_compatibility_payload(
+                    path=path,
+                    deliverable_key=deliverable_key,
+                )
+                if compatibility is not None:
+                    return compatibility
     return None
 
 
@@ -189,9 +197,10 @@ def _expected_patterns(
     *,
     deliverable: Deliverable,
     metadata_artifacts: list[str] | None,
+    packet_root: Path,
 ) -> tuple[str, ...]:
     if metadata_artifacts:
-        return tuple(_exact_path_pattern(path) for path in metadata_artifacts)
+        return tuple(_exact_path_pattern(path, packet_root=packet_root) for path in metadata_artifacts)
 
     folder = deliverable.folder.strip("/")
     if folder:
@@ -199,9 +208,93 @@ def _expected_patterns(
     return ()
 
 
-def _exact_path_pattern(path: str) -> str:
-    normalized = path.replace("\\", "/").lstrip("/")
+def _exact_path_pattern(path: str, *, packet_root: Path) -> str:
+    normalized = _normalize_artifact_path(path=path, packet_root=packet_root)
     return rf"^{re.escape(normalized)}$"
+
+
+def _normalize_artifact_path(*, path: str, packet_root: Path) -> str:
+    normalized = path.replace("\\", "/")
+    artifact_path = Path(normalized)
+    if artifact_path.is_absolute():
+        try:
+            return artifact_path.relative_to(packet_root).as_posix()
+        except ValueError:
+            return artifact_path.as_posix().lstrip("/")
+    return artifact_path.as_posix().lstrip("/")
+
+
+def _read_metadata_compatibility_payload(
+    *,
+    path: Path,
+    deliverable_key: str,
+) -> DeliverableMetadata | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+
+    artifacts_raw = payload.get("artifacts")
+    if not isinstance(artifacts_raw, list):
+        return None
+    artifacts = [item for item in artifacts_raw if isinstance(item, str) and item]
+    if len(artifacts) != len(artifacts_raw):
+        return None
+
+    warnings_raw = payload.get("warnings", [])
+    warnings = [item for item in warnings_raw if isinstance(item, str)]
+
+    inputs_raw = payload.get("inputs")
+    inputs = dict(inputs_raw) if isinstance(inputs_raw, dict) else {}
+
+    schema_versions_raw = payload.get("schema_versions")
+    schema_versions = (
+        {
+            str(key): str(value)
+            for key, value in schema_versions_raw.items()
+            if isinstance(key, str) and isinstance(value, str)
+        }
+        if isinstance(schema_versions_raw, dict)
+        else {}
+    )
+
+    data_sources_raw = payload.get("data_sources")
+    data_sources = (
+        {
+            str(key): str(value)
+            for key, value in data_sources_raw.items()
+            if isinstance(key, str) and isinstance(value, str)
+        }
+        if isinstance(data_sources_raw, dict)
+        else {}
+    )
+
+    generated_at_raw = payload.get("generated_at")
+    generated_at = (
+        datetime.fromisoformat(generated_at_raw)
+        if isinstance(generated_at_raw, str) and generated_at_raw
+        else datetime.now(UTC)
+    )
+    input_fingerprint = payload.get("input_fingerprint")
+    if not isinstance(input_fingerprint, str):
+        input_fingerprint = ""
+
+    deliverable = payload.get("deliverable")
+    if not isinstance(deliverable, str) or not deliverable.strip():
+        deliverable = deliverable_key
+
+    return DeliverableMetadata(
+        deliverable=deliverable,
+        generated_at=generated_at,
+        inputs=inputs,
+        input_fingerprint=input_fingerprint,
+        schema_versions=schema_versions,
+        artifacts=artifacts,
+        warnings=warnings,
+        data_sources=data_sources,
+    )
 
 
 def _list_packet_files(root: Path) -> tuple[str, ...]:
